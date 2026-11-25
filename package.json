@@ -1,0 +1,29 @@
+{
+  "name": "hardwood-dynasty",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "simtest": "tsx scripts/simtest.ts",
+    "skillimpact": "tsx scripts/skillimpact.ts",
+    "longrun": "tsx scripts/longrun.ts",
+    "marketrun": "tsx scripts/marketrun.ts",
+    "fusionaudit": "tsx scripts/fusionaudit.ts",
+    "tokenecon": "tsx scripts/tokenecon.ts"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
