@@ -5,13 +5,15 @@ import type { AttrKey, Conf, Pos, Tier } from './types';
  * two max players is a genuine squeeze and the luxury tax has teeth.
  */
 export const CAP = 70;
+/** The smallest contract the league allows, before any market scaling. */
+export const LEAGUE_MIN_SALARY = 1.1;
 export const ROSTER_MIN = 8;
 export const ROSTER_MAX = 15;
 /**
  * NFTs you can keep off the roster at once. The collection is capped so it can
  * never become a second, uncapped roster outside the salary cap.
  */
-export const STASH_LIMIT = 3;
+export const STASH_LIMIT = 10;
 
 /**
  * A club below the roster minimum can always add a contract up to this share
@@ -22,8 +24,8 @@ export const MIN_SALARY_EXCEPTION = 0.08;
 export const SEASON_ROUNDS = 21;
 export const PLAYOFF_TEAMS_PER_CONF = 4;
 
-/** League revenue grows, so the salary cap rises a little every season. */
-export const CAP_GROWTH = 2;
+/** League revenue grows, so the salary cap rises $4M every season. */
+export const CAP_GROWTH = 4;
 
 /** Front-office cash needed to fully scout one draft prospect. */
 export const SCOUT_COST = 1;

@@ -419,8 +419,8 @@ function placementOf(
 /**
  * Place one dropped player with the champion. The drop never bypasses the cap:
  * it goes to the user's stored collection when their payroll cannot fit it, and
- * otherwise the club releases its weakest non-cornerstone players to free the
- * salary and a roster spot, never cutting below the roster minimum.
+ * otherwise the club releases its weakest players to free the salary and a
+ * roster spot, never cutting below the roster minimum.
  */
 export function awardHofNft(
   state: GameState,
@@ -439,8 +439,8 @@ export function awardHofNft(
   // The drop must never force a signing the club cannot afford. When the user's
   // payroll cannot fit him the NFT goes to their collection, where he costs no
   // cap space until he is signed. A full collection (or a CPU champion, which
-  // has no collection) instead releases the weakest non-cornerstone players
-  // until the deal fits, never cutting below the roster minimum.
+  // has no collection) instead releases the weakest players until the deal
+  // fits, never cutting below the roster minimum.
   const cap = capFor(state);
   const payroll = payrollOf(state, teamId);
   const fitsCap = payroll + player.salary <= cap + 1e-9;
@@ -448,9 +448,7 @@ export function awardHofNft(
     teamId === state.userTeamId && !fitsCap && (state.stash ?? []).length < STASH_LIMIT;
 
   const roster = rosterOf(state, teamId);
-  const cuttable = roster
-    .filter((entry) => !entry.cornerstone)
-    .sort((a, b) => a.overall - b.overall);
+  const cuttable = [...roster].sort((a, b) => a.overall - b.overall);
   // Signing him must leave ROSTER_MIN..ROSTER_MAX players, which bounds the cuts.
   const minCuts = Math.max(0, roster.length + 1 - ROSTER_MAX);
   const maxCuts = Math.max(0, roster.length + 1 - ROSTER_MIN);

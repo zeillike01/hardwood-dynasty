@@ -1,5 +1,6 @@
 import {
   championOf,
+  convertHwdToTrainingPoints,
   convertPointsToCash,
   cpuMarketPass,
   createLeague,
@@ -40,10 +41,19 @@ import {
   simulatePlayoffs,
   simulateSeason,
   startNextSeason,
+  advanceSeason,
+  seasonReady,
+  seasonSkipQuote,
+  skipSeasonWait,
+  seasonSkipsLeft,
+  seasonSkipsUsedToday,
+  SEASON_COOLDOWN_ENABLED,
+  SEASON_COOLDOWN_MS,
+  SEASON_SKIP_BASE,
+  SEASON_SKIP_MAX_PER_DAY,
+  SEASON_SKIP_MIN_ACCOUNT_SEASONS,
   trainPlayer,
   userOnTheClock,
-  buyoutPlayer,
-  waivePlayer,
   Rng,
   rollDraftTier,
 } from '../src/game/engine';
@@ -55,6 +65,7 @@ import {
   HWD_STARTING,
   hwdBalance,
   marketAsk,
+  marketMaxBid,
   marketFee,
   marketValue,
   openListings,
@@ -62,7 +73,17 @@ import {
   CLUB_HWD_START,
   clubHwdBalance,
   fusionHwdCost,
+  FUSION_CARRY_LEVELS,
+  FUSION_RATING_INHERITANCE,
+  FUSION_SALARY_MULTIPLIER,
   devFundBalance,
+  HWD_TP_MIN,
+  HWD_TP_RATE,
+  HWD_TP_SEASON_CAP,
+  hwdTpQuote,
+  hwdTpRemaining,
+  hwdTpRemainingToday,
+  hwdTpSpent,
 } from '../src/game/market';
 import {
   activeHof,
@@ -96,6 +117,7 @@ import {
   STASH_LIMIT,
   TIER_BASE,
   MIN_SALARY_EXCEPTION,
+  LEAGUE_MIN_SALARY,
   ROSTER_MAX,
   ROSTER_MIN,
 } from '../src/game/data';
@@ -106,19 +128,9 @@ function assert(condition: unknown, message: string): asserts condition {
 
 let state = createLeague('NYS', 20261120);
 
-const cornerstones = Object.values(state.players).filter(
-  (p) => p.teamId && p.tier === 1,
-);
-assert(
-  cornerstones.length === 2 &&
-    cornerstones.every(
-      (p) => p.teamId === state.userTeamId && p.level === 1 && p.salary === 1 && p.years === 10,
-    ),
-  'the user should open with exactly two tier-1 cornerstones on 10-year, $1.0M deals',
-);
 assert(
   Object.values(state.players)
-    .filter((p) => p.teamId && p.tier !== 1)
+    .filter((p) => p.teamId)
     .every((p) => p.tier === 5 && p.level === 1),
   'every other rostered player should start at tier 5, level 1',
 );
@@ -164,8 +176,15 @@ assert(
   hurtLab.players[hurtStarId].injuryGames === 1,
   'one game should come off the recovery clock',
 );
-hurtLab.players[hurtStarId].injuryGames = 1;
+const secondUserGame = hurtLab.schedule.find(
+  (g) => g.round === hurtLab.round && (g.home === hurtTeam || g.away === hurtTeam),
+)!;
 hurtLab = simulateNextRound(hurtLab);
+const secondPlayed = hurtLab.schedule.find((g) => g.id === secondUserGame.id)!;
+assert(
+  secondPlayed.box?.every((line) => line.playerId !== hurtStarId),
+  'a player listed OUT 1 should sit that game rather than be healed at tip-off',
+);
 assert(
   hurtLab.players[hurtStarId].injuryGames === 0 && hurtLab.players[hurtStarId].injury === null,
   'a player should heal once the recovery clock runs out',
@@ -189,6 +208,52 @@ assert(loadedLegacy, 'a save carrying the old trade desk should still load');
 assert(
   !('tradeOffers' in loadedLegacy!) && !('tradeBlock' in loadedLegacy!),
   'loading should strip the removed trade desk from saved state',
+);
+
+// A fused deal priced before the discount is cut on load, after the ratings
+// rebuild, to the discounted demand.
+const fusedSave = createLeague('DEN', 5150);
+fusedSave.ratingsVersion = 0;
+const overpaid = rosterOf(fusedSave, fusedSave.userTeamId)[0];
+overpaid.fused = true;
+overpaid.salary = 40;
+overpaid.overall = 99; // the ratings rebuild must re-rate him before the re-pricing
+overpaid.tier = 1;
+overpaid.level = MAX_LEVEL;
+const fusedLoaded = importSave(JSON.stringify(fusedSave))!;
+const repriced = fusedLoaded.players[overpaid.id];
+const fusedDemand = Math.max(LEAGUE_MIN_SALARY, salaryDemand(repriced, capFor(fusedLoaded)));
+assert(repriced.overall !== 99, 'the fixture save should have its ratings rebuilt on load');
+assert(repriced.salary === fusedDemand, 'loading should cut a fused deal to the discounted demand');
+assert(
+  repriced.salary < salaryDemand({ ...repriced, fused: false }, capFor(fusedLoaded)),
+  'the cut should land on the discounted demand, not the open market',
+);
+assert(repriced.salary < 40, 'the migration should lower the over-market salary');
+assert(fusedLoaded.fusedSalaryVersion === 1, 'the re-pricing should mark the save');
+const fusedReloaded = importSave(JSON.stringify(fusedLoaded))!;
+assert(
+  fusedReloaded.players[overpaid.id].salary === fusedDemand,
+  'a merged save should not be re-priced again',
+);
+
+// A fused deal at or below today's demand is left alone, and non-fused deals
+// are never touched.
+const cheapSave = createLeague('DEN', 5151);
+const cheapRoster = rosterOf(cheapSave, cheapSave.userTeamId);
+const cheapFused = cheapRoster[0];
+const normalDeal = cheapRoster[1];
+cheapFused.fused = true;
+cheapFused.salary = LEAGUE_MIN_SALARY;
+normalDeal.salary = 12.3;
+const cheapLoaded = importSave(JSON.stringify(cheapSave))!;
+assert(
+  cheapLoaded.players[cheapFused.id].salary === LEAGUE_MIN_SALARY,
+  'loading should never raise a fused deal already inside the discount',
+);
+assert(
+  cheapLoaded.players[normalDeal.id].salary === 12.3,
+  'loading should leave non-fused deals alone',
 );
 
 // Training economy: level to 25, promote a tier, then convert points to cash.
@@ -226,12 +291,12 @@ assert(
 /* Tier fusion: burn 2-3 fully trained same-tier players into a brand-new NFT */
 let fusionLab = createLeague('PHX', 616161);
 const fusionRoster = rosterOf(fusionLab, fusionLab.userTeamId)
-  .filter((player) => !player.cornerstone)
   .slice(0, 3);
 for (const player of fusionRoster) {
   player.tier = 5;
   player.level = MAX_LEVEL;
 }
+const fusionFee = fusionHwdCost(Math.max(...fusionRoster.map((player) => player.overall)));
 const fusionHwdBefore = fusionLab.hwd ?? 0;
 const fusionFundBefore = fusionLab.devFund ?? 0;
 const rosterBefore = Object.keys(fusionLab.players).length;
@@ -246,11 +311,11 @@ const fused = fusePlayers(fusionLab, fusionRoster.map((player) => player.id));
 assert(fused.state, fused.error ?? 'three maxed tier-5 players should fuse');
 fusionLab = fused.state!;
 assert(
-  fusionLab.hwd === fusionHwdBefore - fusionHwdCost(5),
+  fusionLab.hwd === fusionHwdBefore - fusionFee,
   'fusion should pay its HWD price',
 );
 assert(
-  (fusionLab.devFund ?? 0) === fusionFundBefore + fusionHwdCost(5),
+  (fusionLab.devFund ?? 0) === fusionFundBefore + fusionFee,
   'the fusion fee should land in the development treasury',
 );
 const minted = Object.values(fusionLab.players).find((player) => !idsBefore.has(player.id));
@@ -265,8 +330,33 @@ assert(
 );
 assert(minted!.tier === 4, 'three tier-5 players should mint a tier-4 NFT');
 assert(minted!.age === 18, 'the minted NFT should start at 18');
-assert(minted!.level === 1, 'the minted NFT should start at level 1');
-assert(minted!.salary > 0 && minted!.years >= 1, 'the minted NFT should carry a rookie-scale deal');
+assert(
+  minted!.level === FUSION_CARRY_LEVELS + 1,
+  'the mint should carry the configured training levels',
+);
+const burnedAnchor = [...fusionRoster].sort((a, b) => b.overall - a.overall)[0];
+assert(
+  minted!.overall >=
+    Math.min(99, Math.round(burnedAnchor.overall * FUSION_RATING_INHERITANCE)) - 2,
+  'the mint should inherit the best burned rating, not the tier base',
+);
+assert(minted!.salary > 0 && minted!.years >= 1, 'the minted NFT should carry a three-year deal');
+const mintDemand = salaryDemand(minted!, capFor(fusionLab));
+assert(
+  Math.abs(minted!.salary - Math.max(LEAGUE_MIN_SALARY, mintDemand)) < 1e-9,
+  'a fused player should be minted at his rating-based demand, floored at the league minimum',
+);
+assert(
+  minted!.overall < 70 || minted!.salary > LEAGUE_MIN_SALARY,
+  'a rated fusion mint should be paid above the league minimum',
+);
+const fusedAsk = salaryDemand(minted!, capFor(fusionLab));
+const openAsk = salaryDemand({ ...minted!, fused: false }, capFor(fusionLab));
+assert(
+  fusedAsk < openAsk &&
+    Math.abs(fusedAsk - openAsk * FUSION_SALARY_MULTIPLIER) <= 0.1,
+  'a fused player should re-sign below the open market',
+);
 assert(
   minted!.teamId === fusionLab.userTeamId,
   'the minted NFT should join the roster when it fits',
@@ -279,11 +369,12 @@ assert(
 // Three tier-2 inputs reach tier 1, the fusion ceiling.
 const topLab = createLeague('CHI', 717171);
 const topTrio = rosterOf(topLab, topLab.userTeamId)
-  .filter((player) => !player.cornerstone)
   .slice(0, 3);
 for (const player of topTrio) {
   player.tier = 2;
   player.level = MAX_LEVEL;
+  player.overall = 88;
+  player.potential = 88;
 }
 const topBefore = new Set(Object.keys(topLab.players));
 const topFused = fusePlayers(topLab, topTrio.map((player) => player.id));
@@ -292,11 +383,20 @@ const tierOne = Object.values(topFused.state!.players).find(
   (player) => !topBefore.has(player.id),
 )!;
 assert(tierOne.tier === 1, 'fusion should top out at tier 1');
+assert(
+  tierOne.potential >= 88,
+  'the mint should inherit the best burned player as its ceiling',
+);
+assert(
+  Math.abs(
+    tierOne.salary - Math.max(LEAGUE_MIN_SALARY, salaryDemand(tierOne, capFor(topFused.state!))),
+  ) < 1e-9 && tierOne.salary > LEAGUE_MIN_SALARY,
+  'a star-level mint should be paid above the minimum on the rating curve',
+);
 
 // Fusion takes exactly three players, never two.
 const pairLab = createLeague('CHI', 717172);
 const pairPlayers = rosterOf(pairLab, pairLab.userTeamId)
-  .filter((player) => !player.cornerstone)
   .slice(0, 2);
 for (const player of pairPlayers) {
   player.tier = 5;
@@ -309,9 +409,7 @@ assert(
 
 // Tier 1 and Hall of Fame inputs, mixed tiers, untrained players and rival clubs are refused.
 const guardLab = createLeague('CHI', 727272);
-const guardRoster = rosterOf(guardLab, guardLab.userTeamId).filter(
-  (player) => !player.cornerstone,
-);
+const guardRoster = rosterOf(guardLab, guardLab.userTeamId);
 const [g1, g2, g3] = guardRoster;
 g1.tier = 1;
 g1.level = MAX_LEVEL;
@@ -359,7 +457,7 @@ assert(
 
 /* Stored NFTs: off the cap until signed */
 const stashLab = createLeague('DAL', 818181);
-const stashTarget = rosterOf(stashLab, stashLab.userTeamId).find((player) => !player.cornerstone)!;
+const stashTarget = rosterOf(stashLab, stashLab.userTeamId)[0]!;
 const payrollBeforeStash = payrollOf(stashLab, stashLab.userTeamId);
 stashLab.players[stashTarget.id].teamId = null;
 stashLab.players[stashTarget.id].years = 2;
@@ -386,9 +484,11 @@ assert(
 
 /* A mint whose contract cannot fit under the cap is stored automatically */
 const capLab = createLeague('DEN', 919191);
-const anchor = rosterOf(capLab, capLab.userTeamId).find((player) => !player.cornerstone)!;
+// Extra bodies so burning three inputs cannot break the roster minimum alone.
+for (const id of capLab.freeAgents.slice(0, 3)) capLab.players[id].teamId = capLab.userTeamId;
+const anchor = rosterOf(capLab, capLab.userTeamId)[0]!;
 const capInputs = rosterOf(capLab, capLab.userTeamId)
-  .filter((player) => player.id !== anchor.id && !player.cornerstone)
+  .filter((player) => player.id !== anchor.id)
   .slice(0, 3);
 for (const player of capInputs) {
   player.tier = 5;
@@ -409,11 +509,13 @@ assert(
 
 /* The stored collection is capped at three NFTs */
 const fullStashLab = createLeague('DEN', 929292);
-const fullAnchor = rosterOf(fullStashLab, fullStashLab.userTeamId).find(
-  (player) => !player.cornerstone,
-)!;
+// Extra bodies so the refused fusion fails on the collection, not the minimum.
+for (const id of fullStashLab.freeAgents.slice(0, 3)) {
+  fullStashLab.players[id].teamId = fullStashLab.userTeamId;
+}
+const fullAnchor = rosterOf(fullStashLab, fullStashLab.userTeamId)[0]!;
 const fullInputs = rosterOf(fullStashLab, fullStashLab.userTeamId)
-  .filter((player) => player.id !== fullAnchor.id && !player.cornerstone)
+  .filter((player) => player.id !== fullAnchor.id)
   .slice(0, 3);
 for (const player of fullInputs) {
   player.tier = 5;
@@ -440,9 +542,7 @@ assert(
 
 /* Stored NFTs are frozen: no aging, no development */
 const frozenLab = createLeague('SEA', 616263);
-const frozenPlayer = rosterOf(frozenLab, frozenLab.userTeamId).find(
-  (player) => !player.cornerstone,
-)!;
+const frozenPlayer = rosterOf(frozenLab, frozenLab.userTeamId)[0]!;
 frozenLab.players[frozenPlayer.id].teamId = null;
 frozenLab.players[frozenPlayer.id].years = 3;
 frozenLab.stash = [...(frozenLab.stash ?? []), frozenPlayer.id];
@@ -460,28 +560,6 @@ assert(
 assert(
   afterFreeze.players[frozenPlayer.id].years === 2,
   'a stored NFT contract should still tick down',
-);
-
-/* Cornerstones are franchise assets: no sale, waiver or buyout */
-const lockLab = createLeague('NYS', 515253);
-const cornerstone = Object.values(lockLab.players).find((player) => player.cornerstone)!;
-assert(
-  canListOnMarket(lockLab, cornerstone.id).reasons.includes('cornerstone'),
-  'a cornerstone cannot be listed on the marketplace',
-);
-assert(
-  waivePlayer(lockLab, cornerstone.id) === lockLab,
-  'a cornerstone cannot be waived',
-);
-assert(
-  Boolean(
-    sellPlayerToMarket(lockLab, cornerstone.id, 1).error?.toLowerCase().includes('cornerstone'),
-  ),
-  'a cornerstone cannot be sold',
-);
-assert(
-  Boolean(buyoutPlayer(lockLab, cornerstone.id).error?.toLowerCase().includes('cornerstone')),
-  'a cornerstone cannot be bought out',
 );
 
 // Contracts: expired user deals wait for a decision instead of vanishing.
@@ -1115,23 +1193,50 @@ assert(
 );
 
 const seller = rosterOf(marketLab, marketLab.userTeamId).find(
-  (player) => !player.cornerstone && !player.rookie && player.id !== buyable.playerId,
+  (player) => !player.rookie && player.id !== buyable.playerId,
 );
 assert(seller, 'the user should have a sellable veteran');
-const saleValue = marketValue(seller);
-// The owner sets the price: valuation is a guide, so an ask above it is legal.
-const saleAsk = saleValue + 25;
+// Rivals judge the price: a wild ask over the valuation is refused outright.
+const greedy = sellPlayerToMarket(marketLab, seller.id, marketValue(seller) + 25);
+assert(
+  Boolean(greedy.error) && greedy.error!.includes('valued at about'),
+  'a rival should refuse an ask far past the valuation',
+);
+assert(
+  marketLab.players[seller.id].teamId === marketLab.userTeamId,
+  'a refused ask must leave the player on the user roster',
+);
+
+// A proven starter draws a premium, and the owner still names the price.
+const proven = Object.values(marketLab.players)
+  .filter(
+    (player) =>
+      player.teamId &&
+      player.teamId !== marketLab.userTeamId &&
+      !player.rookie 
+  )
+  .sort((a, b) => b.overall - a.overall)[0];
+assert(proven, 'a rival should own a player worth buying');
+// Guarantee one club can absorb the salary so the sale has a legal buyer.
+const richest = Object.values(marketLab.teams)
+  .filter((team) => team.id !== marketLab.userTeamId && team.id !== proven.teamId)
+  .sort((a, b) => capSpaceOf(marketLab, b.id) - capSpaceOf(marketLab, a.id))[0];
+for (const player of rosterOf(marketLab, richest.id)) player.salary = 1;
+proven.teamId = marketLab.userTeamId;
+proven.joinedSeason = marketLab.season - 2;
+proven.years = 2;
+const saleAsk = marketMaxBid(proven);
 const walletBefore = hwdBalance(marketLab);
 const supplyBeforeSale = totalHwd(marketLab);
-const soldState = sellPlayerToMarket(marketLab, seller.id, saleAsk);
-assert(soldState.state, soldState.error ?? 'the veteran should sell at the owner\'s ask');
+const soldState = sellPlayerToMarket(marketLab, proven.id, saleAsk);
+assert(soldState.state, soldState.error ?? 'a proven starter should sell at the owner\'s ask');
 marketLab = soldState.state!;
 assert(
   totalHwd(marketLab) === supplyBeforeSale,
   'a marketplace sale must move HWD, never mint it',
 );
 assert(
-  marketLab.players[seller.id].teamId !== marketLab.userTeamId,
+  marketLab.players[proven.id].teamId !== marketLab.userTeamId,
   'a sold player should leave the user roster',
 );
 assert(
@@ -1145,7 +1250,7 @@ assert(
 
 // A peer-to-peer sale needs a club that actually holds the tokens.
 const anotherSeller = rosterOf(marketLab, marketLab.userTeamId).find(
-  (player) => !player.cornerstone && !player.rookie && canListOnMarket(marketLab, player.id).eligible,
+  (player) => !player.rookie && canListOnMarket(marketLab, player.id).eligible,
 );
 assert(anotherSeller, 'the user should still have a sellable veteran');
 const anotherValue = marketValue(anotherSeller);
@@ -1243,6 +1348,184 @@ assert(
   Math.abs(passTotal(passLab) - passTotal(passBefore)) < 0.01,
   'the rival market pass should move HWD, never mint it',
 );
+
+/* HWD conversion desk: HWD buys training points, capped every season */
+const deskLab = createLeague('NYS', 787878);
+deskLab.season = MARKET_MIN_ACCOUNT_SEASONS + 1;
+deskLab.hwd = 100;
+deskLab.devFund = 0;
+deskLab.tpSwap = undefined;
+const deskTpBefore = deskLab.teams[deskLab.userTeamId].trainingPoints;
+const deskFundBefore = devFundBalance(deskLab);
+const deskTotalBefore = totalHwd(deskLab);
+const minQuote = hwdTpQuote(HWD_TP_MIN);
+assert(
+  minQuote.tp === HWD_TP_MIN * HWD_TP_RATE,
+  'the desk pays straight through: every token is worth exactly its rate',
+);
+assert(
+  Boolean(convertHwdToTrainingPoints(deskLab, HWD_TP_MIN - 1).error),
+  'the desk refuses a conversion below its minimum',
+);
+
+const day1 = new Date(2030, 0, 1);
+const firstConvert = convertHwdToTrainingPoints(deskLab, HWD_TP_MIN, day1);
+assert(firstConvert.state, firstConvert.error ?? 'HWD should convert into training points');
+const afterConvert = firstConvert.state!;
+assert(
+  hwdBalance(afterConvert) === hwdBalance(deskLab) - HWD_TP_MIN,
+  'a conversion spends HWD from the wallet',
+);
+assert(
+  afterConvert.teams[afterConvert.userTeamId].trainingPoints === deskTpBefore + minQuote.tp,
+  'the converted HWD is credited as training points',
+);
+assert(
+  devFundBalance(afterConvert) === deskFundBefore,
+  'the desk takes no fee, so the development fund is untouched',
+);
+assert(
+  totalHwd(afterConvert) === deskTotalBefore - HWD_TP_MIN,
+  'all the converted HWD leaves circulation instead of moving to a rival',
+);
+assert(hwdTpSpent(afterConvert) === HWD_TP_MIN, 'the season cap tracks HWD spent at the desk');
+assert(
+  hwdTpRemainingToday(afterConvert, day1) === 0,
+  'the daily cap is spent by one minimum trade',
+);
+assert(
+  Boolean(convertHwdToTrainingPoints(afterConvert, HWD_TP_MIN, day1).error),
+  'the desk refuses a second trade on the same day',
+);
+
+const day2 = new Date(2030, 0, 2);
+const day3 = new Date(2030, 0, 3);
+const day4 = new Date(2030, 0, 4);
+const day5 = new Date(2030, 0, 5);
+const nextDay = convertHwdToTrainingPoints(afterConvert, HWD_TP_MIN, day2);
+assert(nextDay.state, nextDay.error ?? 'the daily cap resets on the next day');
+const day3Convert = convertHwdToTrainingPoints(nextDay.state!, HWD_TP_MIN, day3);
+assert(day3Convert.state, day3Convert.error ?? 'the third day should convert');
+const day4Convert = convertHwdToTrainingPoints(day3Convert.state!, HWD_TP_MIN, day4);
+assert(day4Convert.state, day4Convert.error ?? 'the fourth day fills the season cap');
+const deskCapped = day4Convert.state!;
+assert(
+  hwdTpRemaining(deskCapped) === 0 && hwdTpSpent(deskCapped) === HWD_TP_SEASON_CAP,
+  'four daily trades use up the season cap',
+);
+assert(
+  Boolean(convertHwdToTrainingPoints(deskCapped, HWD_TP_MIN, day5).error),
+  'no HWD converts once the season cap is spent',
+);
+assert(
+  Boolean(convertHwdToTrainingPoints(afterConvert, HWD_TP_SEASON_CAP, day2).error),
+  'a single trade cannot jump the daily cap',
+);
+const nextTpSeason: GameState = { ...deskCapped, season: deskCapped.season + 1 };
+assert(
+  hwdTpRemaining(nextTpSeason) === HWD_TP_SEASON_CAP,
+  'a new season resets the conversion cap',
+);
+assert(
+  Boolean(convertHwdToTrainingPoints(nextTpSeason, HWD_TP_MIN, day5).state),
+  'the desk opens again in the next season',
+);
+const shortWallet: GameState = { ...deskLab, hwd: HWD_TP_MIN - 1 };
+assert(
+  Boolean(convertHwdToTrainingPoints(shortWallet, HWD_TP_MIN, day1).error),
+  'the desk refuses a trade the wallet cannot cover',
+);
+const lockedDesk = createLeague('NYS', 121212);
+lockedDesk.hwd = 100;
+const enteredBracket = enterHallOfFameLeague(lockedDesk);
+assert(enteredBracket.state, enteredBracket.error ?? 'the test bracket should open');
+assert(
+  Boolean(convertHwdToTrainingPoints(enteredBracket.state!, HWD_TP_MIN, day1).error),
+  'the desk is closed while the Hall of Fame roster is locked',
+);
+
+/* Season clock: a 24-hour wait, cleared with HWD a limited number of times */
+const clockLab = createLeague('NYS', 909090);
+clockLab.season = SEASON_SKIP_MIN_ACCOUNT_SEASONS + 1;
+clockLab.hwd = 5000;
+clockLab.devFund = 0;
+clockLab.seasonReadyAt = undefined;
+clockLab.seasonSkip = undefined;
+assert(seasonReady(clockLab, day1), 'a save with no wait opens the season immediately');
+const opened = advanceSeason(clockLab, day1);
+assert(opened !== clockLab, 'advancing should open the next season');
+if (SEASON_COOLDOWN_ENABLED) {
+  assert(
+    Math.abs(Date.parse(opened.seasonReadyAt!) - (day1.getTime() + SEASON_COOLDOWN_MS)) < 1000,
+    'a new season should start the 24-hour wait',
+  );
+  assert(
+    !seasonReady(opened, day1),
+    'the next season should be cooling down right after it opens',
+  );
+  assert(
+    seasonReady(opened, new Date(day1.getTime() + SEASON_COOLDOWN_MS)),
+    'the wait should open the season for free once it expires',
+  );
+  const firstQuote = seasonSkipQuote(opened, day1);
+  assert(!firstQuote.blocked, firstQuote.blocked ?? 'a skip should be available on a cooling season');
+  const expectedSkip = Math.ceil(SEASON_SKIP_BASE * Math.sqrt(capFor(opened) / CAP));
+  assert(firstQuote.cost === expectedSkip, 'the first skip should cost the base rate');
+  const skipped = skipSeasonWait(opened, day1);
+  assert(skipped.state, skipped.error ?? 'paying should open the season');
+  const afterSkip = skipped.state!;
+  // The rollover itself runs the CPU market, so compare against a free advance
+  // from the same state: only the fee may differ.
+  const advancedOnly = advanceSeason(opened, day1);
+  assert(afterSkip.season === opened.season + 1, 'a skip should open exactly one season');
+  assert(
+    hwdBalance(afterSkip) === hwdBalance(advancedOnly) - expectedSkip,
+    'the skip fee should leave the wallet',
+  );
+  assert(
+    devFundBalance(afterSkip) === devFundBalance(advancedOnly) + expectedSkip,
+    'the skip fee should fund development',
+  );
+  assert(
+    seasonSkipsUsedToday(afterSkip, day1) === 1,
+    'the daily skip counter should track the purchase',
+  );
+  assert(
+    seasonSkipQuote(afterSkip, day1).cost ===
+      Math.ceil(SEASON_SKIP_BASE * Math.sqrt(capFor(afterSkip) / CAP) * 1.6),
+    'the second skip of the day should cost more',
+  );
+  let skipLab = afterSkip;
+  for (let index = 1; index < SEASON_SKIP_MAX_PER_DAY; index += 1) {
+    const step = skipSeasonWait(skipLab, day1);
+    assert(step.state, step.error ?? 'another skip should be allowed the same day');
+    skipLab = step.state!;
+  }
+  assert(
+    Boolean(seasonSkipQuote(skipLab, day1).blocked),
+    'the daily skip cap should refuse one more',
+  );
+  assert(
+    seasonSkipsLeft(skipLab, day2) === SEASON_SKIP_MAX_PER_DAY,
+    'the daily skip cap should reset the next day',
+  );
+  const shortSkip = skipSeasonWait({ ...opened, hwd: 1 }, day1);
+  assert(Boolean(shortSkip.error) && !shortSkip.state, 'a skip should be refused without the HWD');
+  const youngLab = createLeague('NYS', 919191);
+  youngLab.season = 3;
+  youngLab.hwd = 1000;
+  youngLab.seasonReadyAt = new Date(day1.getTime() + SEASON_COOLDOWN_MS).toISOString();
+  assert(
+    Boolean(seasonSkipQuote(youngLab, day1).blocked),
+    'skips should unlock only after the account gate',
+  );
+  assert(Boolean(skipSeasonWait(youngLab, day1).error), 'a young account should not buy a skip');
+} else {
+  assert(
+    seasonReady(opened, day1),
+    'the season clock is off, so the next season should be ready at once',
+  );
+}
 
 /* Hall of Fame league: 10% burn, podium prizes and a random champion NFT */
 const hofTotal = (state: GameState) =>
@@ -1511,7 +1794,6 @@ const fullCollectionIds = new Set(
   rosterOf(fullCollectionLab, fullCollectionLab.userTeamId).map((entry) => entry.id),
 );
 const fullCollectionWeakest = rosterOf(fullCollectionLab, fullCollectionLab.userTeamId)
-  .filter((entry) => !entry.cornerstone)
   .sort((a, b) => a.overall - b.overall);
 const fullCollectionPlayers = { ...fullCollectionLab.players };
 fullCollectionWeakest.forEach((entry, index) => {
@@ -1556,9 +1838,8 @@ const fullCollectionCuts = [...fullCollectionIds].filter(
   (id) => !fullCollectionAfter.some((entry) => entry.id === id),
 );
 assert(
-  fullCollectionCuts.length > 0 &&
-    fullCollectionCuts.every((id) => !fullCollectionState.players[id].cornerstone),
-  'only non-cornerstone players should be released to fit the drop',
+  fullCollectionCuts.length > 0,
+  'the drop should force at least one cut',
 );
 assert(
   fullCollectionCuts.every((id) => fullCollectionState.freeAgents.includes(id)),

@@ -10,8 +10,7 @@ export type MarketBlock =
   | 'not-on-roster'
   | 'account-age'
   | 'rookie-deal'
-  | 'ownership'
-  | 'cornerstone';
+  | 'ownership';
 
 export interface MarketEligibility {
   eligible: boolean;
@@ -27,11 +26,13 @@ export interface MarketEligibility {
 /* ------------------------------------------------------------------ */
 
 /**
- * HWD a brand-new career starts with, enough for one useful signing. It is paid
- * out of the game's rewards allocation, not minted and not an airdrop: a free
- * player starts here and earns the rest by playing the base league.
+ * HWD a brand-new career starts with. It is paid out of the game's rewards
+ * allocation, not minted and not an airdrop: a free player starts here and
+ * earns the rest by playing the base league. Set to 5,000 so a new manager
+ * opens with the same float as a rival club and the opening economy can be
+ * played with and tested.
  */
-export const HWD_STARTING = 120;
+export const HWD_STARTING = 5000;
 /** Share of every completed sale paid to the development treasury instead of the seller. */
 export const MARKET_FEE_RATE = 0.05;
 /**
@@ -44,6 +45,8 @@ export const CLUB_HWD_START = 5000;
 export const HWD_LEAGUE_ENTRY_FEE = 25;
 /** CPU clubs list at a premium over what they would pay for a player. */
 export const MARKET_ASK_PREMIUM = 1.1;
+/** The most a club will pay over a player's valuation, so asks cannot drift free. */
+export const MARKET_BUY_PREMIUM = 1.25;
 /** Cheapest listing the marketplace accepts. */
 export const MARKET_MIN_PRICE = 1;
 /** How many CPU listings the marketplace carries at once. */
@@ -66,6 +69,62 @@ export function devFundBalance(state: GameState): number {
 /** Development-fund HWD taken from a sale of this size; the platform keeps at least one token. */
 export function marketFee(price: number): number {
   return Math.max(MARKET_MIN_PRICE, Math.ceil(price * MARKET_FEE_RATE));
+}
+
+/* ------------------------------------------------------------------ */
+/* HWD conversion desk: HWD in, training points out                    */
+/* ------------------------------------------------------------------ */
+
+/** Local calendar day key (YYYY-MM-DD); the daily quest and the desk share one clock. */
+export function todayKey(now = new Date()): string {
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Training points bought per HWD. The desk pays straight through: one token is
+ * 100 training points and no cut comes off the trade.
+ */
+export const HWD_TP_RATE = 100;
+/** HWD a manager may convert in one season, so TP cannot be bought in bulk. */
+export const HWD_TP_SEASON_CAP = 20;
+/** HWD a manager may convert in one day, so a season's cap arrives over several days. */
+export const HWD_TP_DAILY_CAP = 5;
+/** Smallest conversion the desk accepts. */
+export const HWD_TP_MIN = 5;
+
+export interface HwdTpQuote {
+  /** HWD the trade costs. */
+  hwd: number;
+  /** Training points credited. */
+  tp: number;
+}
+
+/** HWD already converted this season, for the per-season cap. */
+export function hwdTpSpent(state: GameState): number {
+  return state.tpSwap?.season === state.season ? Math.max(0, state.tpSwap.hwd) : 0;
+}
+
+/** HWD still convertible before this season's cap runs out. */
+export function hwdTpRemaining(state: GameState): number {
+  return Math.max(0, HWD_TP_SEASON_CAP - hwdTpSpent(state));
+}
+
+/** HWD already converted on this calendar day, for the daily cap. */
+export function hwdTpSpentToday(state: GameState, now = new Date()): number {
+  return state.tpSwap?.day === todayKey(now) ? Math.max(0, state.tpSwap.dayHwd ?? 0) : 0;
+}
+
+/** HWD still convertible before today's cap runs out. */
+export function hwdTpRemainingToday(state: GameState, now = new Date()): number {
+  return Math.max(0, HWD_TP_DAILY_CAP - hwdTpSpentToday(state, now));
+}
+
+/** What a conversion of `hwd` HWD buys. */
+export function hwdTpQuote(hwd: number): HwdTpQuote {
+  const amount = Math.max(0, Math.floor(hwd));
+  return { hwd: amount, tp: amount * HWD_TP_RATE };
 }
 
 /**
@@ -94,6 +153,15 @@ export function marketAsk(player: Player): number {
   return Math.max(MARKET_MIN_PRICE, Math.round(marketValue(player) * MARKET_ASK_PREMIUM));
 }
 
+/**
+ * The most a rival will pay for a player: the valuation plus a small margin,
+ * with at least one token of headroom so a minimum-value player can still move.
+ */
+export function marketMaxBid(player: Player): number {
+  const value = marketValue(player);
+  return Math.max(value + 1, Math.round(value * MARKET_BUY_PREMIUM));
+}
+
 /* ------------------------------------------------------------------ */
 /* Tier fusion (NFT merge)                                             */
 /* ------------------------------------------------------------------ */
@@ -108,20 +176,50 @@ export const FUSION_TOP_TIER = 1;
 export const FUSION_BOTTOM_TIER = 5;
 
 /**
+ * Training levels a fusion carries into the mint. The three inputs give up
+ * 3 × MAX_LEVEL levels; the mint keeps 18 of them, so the trade hands back a
+ * ready rotation player instead of a level-1 project that is worse than the
+ * players it was made from.
+ *
+ * The mint is built at the inherited rating by starting his base that many
+ * levels below it and applying FUSION_CARRY_LEVELS of training, which leaves
+ * one training level for the owner. The levels are construction, not the source
+ * of the rating: the best burned player's overall is.
+ */
+export const FUSION_CARRY_LEVELS = 18;
+
+/**
+ * A fused player is paid 22% under the open market on the deal he is minted with
+ * and on every later re-signing; league and Hall of Fame rewards are priced
+ * normally. The discount is deliberately left out of the UI.
+ */
+export const FUSION_SALARY_MULTIPLIER = 0.78;
+
+/**
+ * A fusion mint inherits the best burned player's actual rating, not the tier
+ * base: he arrives at 112% of it. Developed players routinely sit far above
+ * TIER_BASE by the time they are maxed, so a flat carry against the tier base
+ * made a real trio a heavy loss. The burn still costs three players, so the
+ * mint is the best of them plus one consolidation step, capped at 99.
+ */
+export const FUSION_RATING_INHERITANCE = 1.12;
+
+/**
  * Fusion is paid in HWD, not training points, and every token goes to the
  * development treasury: the fee moves HWD rather than minting or burning it,
  * exactly like the marketplace fee.
  *
- * The fee is sized to the market, not to the tier number. A fusion mint appears
- * as an 18-year-old worth roughly 1 / 2 / 12 / 28 HWD at tier 4 up to tier 1
- * (and a maxed version of him is worth 6 / 15 / 27 / 46), so the toll is about
- * a sixth of what the prospect becomes rather than a multiple of what he is.
- * The three burned maxed NFTs remain the real price of a fusion.
+ * The toll tracks the best burned player's rating, not the input tier. Below
+ * 70 OVR it stays at the 1 HWD minimum; above that it rises quadratically, so
+ * three ordinary bench players stay cheap to consolidate but melting a strong
+ * trio into a star carries a real price. The three burned NFTs remain the main
+ * cost.
  */
-export const FUSION_HWD_FEES: Record<number, number> = { 5: 1, 4: 2, 3: 4, 2: 7 };
+const FUSION_FEE_FREE_OVERALL = 70;
 
-export function fusionHwdCost(inputTier: number): number {
-  return FUSION_HWD_FEES[inputTier] ?? FUSION_HWD_FEES[FUSION_BOTTOM_TIER];
+export function fusionHwdCost(bestOverall: number): number {
+  const over = Math.max(0, bestOverall - FUSION_FEE_FREE_OVERALL);
+  return Math.max(1, Math.round(1 + 0.35 * over + 0.02 * over * over));
 }
 
 /** True when the user owns the player, on the roster or in the stored collection. */
@@ -162,15 +260,7 @@ export function fusionCheck(state: GameState, playerIds: string[]): FusionCheck 
       reason: `Fuse tier ${FUSION_TOP_TIER + 1} to tier ${FUSION_BOTTOM_TIER} players; tier 1 and the Hall of Fame tier cannot be fused.`,
     };
   }
-  // Burning NFTs is not enough: the mint is paid for in HWD, held by the treasury.
-  const cost = fusionHwdCost(first.tier);
-  const balance = hwdBalance(state);
-  if (balance < cost) {
-    return {
-      ok: false,
-      reason: `A tier ${first.tier} fusion costs ${cost} HWD; you have ${balance}.`,
-    };
-  }
+  let bestOverall = first.overall;
   for (const id of playerIds) {
     const player = state.players[id];
     if (!player || !ownsPlayer(state, id)) {
@@ -179,12 +269,19 @@ export function fusionCheck(state: GameState, playerIds: string[]): FusionCheck 
     if (player.tier !== first.tier) {
       return { ok: false, reason: 'Every fused player must be the same tier.' };
     }
-    if (player.cornerstone) {
-      return { ok: false, reason: 'A cornerstone can never be fused.' };
-    }
     if (player.level < MAX_LEVEL) {
       return { ok: false, reason: `Every fused player must be level ${MAX_LEVEL}.` };
     }
+    bestOverall = Math.max(bestOverall, player.overall);
+  }
+  // Burning NFTs is not enough: the mint is paid for in HWD, held by the treasury.
+  const cost = fusionHwdCost(bestOverall);
+  const balance = hwdBalance(state);
+  if (balance < cost) {
+    return {
+      ok: false,
+      reason: `A fusion anchored by a ${bestOverall} OVR player costs ${cost} HWD; you have ${balance}.`,
+    };
   }
   return { ok: true };
 }
@@ -216,8 +313,6 @@ export function canListOnMarket(state: GameState, playerId: string): MarketEligi
   if (completed < MARKET_MIN_ACCOUNT_SEASONS) reasons.push('account-age');
   if (player?.rookie) reasons.push('rookie-deal');
   if (ownedSeasons < MARKET_MIN_OWNED_SEASONS) reasons.push('ownership');
-  // Cornerstones are the franchise, not tradeable assets: no sale, waiver or buyout.
-  if (player?.cornerstone) reasons.push('cornerstone');
   return {
     eligible: reasons.length === 0,
     reasons,
@@ -234,7 +329,6 @@ export function marketBlockReason(reasons: MarketBlock[]): string {
   }
   if (first === 'rookie-deal') return 'Rookie-scale contracts are soulbound until they expire.';
   if (first === 'ownership') return 'A player must play one full season for you before he can be sold.';
-  if (first === 'cornerstone') return 'A cornerstone is untouchable: he can never be sold, waived or bought out.';
   return 'That player cannot be listed.';
 }
 
@@ -262,8 +356,10 @@ export function openListings(state: GameState): MarketListing[] {
 
 /**
  * Rebuild the CPU side of the marketplace: one listing per rival club for the
- * most valuable player it is willing to move. Rookies and cornerstones are
- * soulbound, so they never appear.
+ * most valuable player it is willing to move. A club shops what it can spare —
+ * the end of its rotation and veterans on expiring deals — rather than its best
+ * player, which used to put the same handful of names back on the board every
+ * season. Rookies are soulbound, so they never appear.
  */
 export function refreshMarketListings(state: GameState): MarketListing[] {
   const kept = userListings(state);
@@ -276,12 +372,17 @@ export function refreshMarketListings(state: GameState): MarketListing[] {
           (player) =>
             player.teamId === team.id &&
             !player.rookie &&
-            !player.cornerstone &&
             player.years > 0 &&
             !listed.has(player.id),
         )
         .sort((a, b) => marketValue(b) - marketValue(a));
-      return roster[0] ?? null;
+      // A deep roster shops its second unit; a thin one can only spare the back
+      // of a short rotation, so the cut-off follows the roster size.
+      const spareFrom = roster.length >= 12 ? 6 : roster.length >= 10 ? 4 : 2;
+      const surplus = roster.filter(
+        (player, index) => index >= spareFrom || (player.age >= 30 && player.years <= 2),
+      );
+      return surplus[0] ?? null;
     })
     .filter((player): player is Player => Boolean(player))
     .sort((a, b) => marketValue(b) - marketValue(a))

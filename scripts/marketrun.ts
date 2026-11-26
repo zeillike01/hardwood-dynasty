@@ -6,11 +6,12 @@
  *   - sells one surplus, listable veteran at market value each season,
  *   - buys up to two affordable listings that crack his top six,
  *   - enters the Hall of Fame league every season he can afford the fee,
- *   - fuses three maxed tier-3 players whenever he can.
+ *   - fuses three maxed tier-3 players whenever he can,
+ *   - converts HWD into training points at the desk, once a day.
  *
- * The report answers two questions: can 120 starting HWD buy a star too early,
- * and does the wallet run dry once marketplace fees, the league entry and its
- * podium prizes are all accounted for?
+ * The report answers two questions: can the starting HWD wallet buy a star too
+ * early, and does the wallet run dry once marketplace fees, the league entry and
+ * its podium prizes are all accounted for?
  *
  * Run with: npm run marketrun  (SEEDS=1,2 to override)
  */
@@ -19,6 +20,7 @@ import {
   buyMarketPlayer,
   capFor,
   championOf,
+  convertHwdToTrainingPoints,
   convertPointsToCash,
   createLeague,
   draftProspects,
@@ -46,7 +48,10 @@ import {
   devFundBalance,
   HWD_LEAGUE_ENTRY_FEE,
   HWD_STARTING,
+  HWD_TP_DAILY_CAP,
+  HWD_TP_SEASON_CAP,
   hwdBalance,
+  hwdTpRemaining,
   marketFee,
   marketValue,
   openListings,
@@ -98,6 +103,9 @@ interface MarketPoint {
   devFundStart: number;
   /** HWD paid on each fusion this season. */
   fusionCosts: number[];
+  /** HWD converted at the desk this season, and the TP it bought. */
+  deskHwd: number;
+  deskTp: number;
   bestAsk: number;
   bestOvr: number;
   topAffordable: boolean;
@@ -134,7 +142,7 @@ function marketStep(state: GameState): {
   let bestBoughtOvr = 0;
   const events: string[] = [];
 
-  // Sell one surplus veteran (never a cornerstone, never below nine players).
+  // Sell one surplus veteran (never below nine players).
   const roster = rosterOf(s, uid).sort((a, b) => b.overall - a.overall);
   if (roster.length > 9) {
     const core = new Set(roster.slice(0, 9).map((player) => player.id));
@@ -338,6 +346,32 @@ function hofStep(state: GameState): {
   };
 }
 
+/**
+ * Desk policy: sell HWD back at the cap, one day's worth at a time. With a
+ * 5 HWD daily cap and a 20 HWD season cap a season takes four trades, so the
+ * sim dates each one a day apart and reports the TP those tokens bought.
+ */
+function deskStep(
+  state: GameState,
+  day: (index: number) => Date,
+): { state: GameState; hwd: number; tp: number } {
+  let s = state;
+  let hwd = 0;
+  let tp = 0;
+  for (let index = 0; index < HWD_TP_SEASON_CAP / HWD_TP_DAILY_CAP; index++) {
+    const amount = Math.min(HWD_TP_DAILY_CAP, hwdTpRemaining(s), hwdBalance(s));
+    if (amount < 1) break;
+    const beforeHwd = hwdBalance(s);
+    const beforeTp = s.teams[s.userTeamId].trainingPoints;
+    const result = convertHwdToTrainingPoints(s, amount, day(index));
+    if (!result.state) break;
+    s = result.state;
+    hwd += beforeHwd - hwdBalance(s);
+    tp += s.teams[s.userTeamId].trainingPoints - beforeTp;
+  }
+  return { state: s, hwd, tp };
+}
+
 function run(seed: number): { points: MarketPoint[]; finalState: GameState; fusions: number } {
   let state = createLeague('NYS', seed);
   const points: MarketPoint[] = [];
@@ -372,6 +406,9 @@ function run(seed: number): { points: MarketPoint[]; finalState: GameState; fusi
     const hof = hofStep(state);
     state = hof.state;
 
+    const desk = deskStep(state, (index) => new Date(2030, 0, 1 + season * 10 + index));
+    state = desk.state;
+
     state = enterOffseason(state);
     const managed = manageOffseason(state);
     state = managed.state;
@@ -399,6 +436,8 @@ function run(seed: number): { points: MarketPoint[]; finalState: GameState; fusi
       devFund: devFundBalance(state),
       devFundStart,
       fusionCosts: managed.fusionCosts,
+      deskHwd: desk.hwd,
+      deskTp: desk.tp,
       bestAsk,
       bestOvr,
       topAffordable: bestAsk > 0 && hwdStart >= bestAsk,
@@ -447,7 +486,7 @@ console.log(
   runs
     .map(
       (entry, index) =>
-        `seed ${entry.seed}: best listing ${opening[index].bestOvr} OVR for ${opening[index].bestAsk} HWD (${opening[index].topAffordable ? 'affordable' : 'out of reach'} on 120)`,
+        `seed ${entry.seed}: best listing ${opening[index].bestOvr} OVR for ${opening[index].bestAsk} HWD (${opening[index].topAffordable ? 'affordable' : 'out of reach'} on the starting wallet)`,
     )
     .join('\n'),
 );
@@ -468,6 +507,29 @@ console.log(
 console.log(
   `seasons at 0 HWD: ${runs.map((entry) => `${entry.points.filter((r) => r.hwdEnd <= 0).length}/${entry.points.length}`).join(', ')}; seasons that could afford the best listing: ${runs.map((entry) => `${entry.points.filter((r) => r.topAffordable).length}/${entry.points.length}`).join(', ')}`,
 );
+
+console.log('\nHWD → TP desk (100 TP per HWD, 5 HWD a day, 20 HWD a season)');
+for (const entry of runs) {
+  const points = entry.points;
+  const converted = points.reduce((sum, point) => sum + point.deskHwd, 0);
+  const bought = points.reduce((sum, point) => sum + point.deskTp, 0);
+  const full = points.filter((point) => point.deskHwd >= HWD_TP_SEASON_CAP).length;
+  const partial = points.filter(
+    (point) => point.deskHwd > 0 && point.deskHwd < HWD_TP_SEASON_CAP,
+  ).length;
+  console.log(
+    `seed ${entry.seed}: ${converted} HWD converted over ${points.length} seasons → ${bought} TP ` +
+      `(${round1(converted / points.length)} HWD and ${round1(bought / points.length)} TP a season); ` +
+      `${full} seasons at the full cap, ${partial} partial; wallet ends at ${hwdBalance(entry.finalState)} HWD`,
+  );
+}
+console.log(`${pad('decade', 10)}${pad('deskHWD', 9)}${pad('deskTP', 9)}${pad('hwdEnd', 8)}${pad('bestOVR', 9)}`);
+for (let start = 1; start <= SEASONS; start += 10) {
+  const slice = all.filter((r) => r.season >= start && r.season < start + 10);
+  console.log(
+    `${pad(`${start}–${Math.min(SEASONS, start + 9)}`, 10)}${fmt(mean(slice.map((r) => r.deskHwd)), 1)}${fmt(mean(slice.map((r) => r.deskTp)), 1)}${fmt(mean(slice.map((r) => r.hwdEnd)), 0)}${fmt(mean(slice.map((r) => r.bestBoughtOvr)), 0)}`,
+  );
+}
 
 console.log('\nHall of Fame league');
 const advertisedPrize = (point: MarketPoint) => {

@@ -1,5 +1,8 @@
 import type { DailyQuest, GameState, QuestReward, Team } from './types';
 import { capFor } from './engine';
+import { todayKey } from './market';
+
+export { todayKey };
 
 /**
  * Quest payouts scale with the salary cap so a daily reward is worth the same
@@ -46,12 +49,6 @@ function hash(text: string): number {
     value = Math.imul(value, 16777619);
   }
   return value >>> 0;
-}
-
-export function todayKey(now = new Date()): string {
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${now.getFullYear()}-${month}-${day}`;
 }
 
 function createQuest(state: GameState, previous?: DailyQuest): DailyQuest {

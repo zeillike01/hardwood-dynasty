@@ -62,14 +62,19 @@ export interface Player {
   skillLevels?: Partial<Record<AttrKey, number>>;
   /** True while the player is still on the rookie-scale deal he was drafted on. */
   rookie?: boolean;
+  /** Minted by a fusion: 22% under the market on his deal and every re-signing. */
+  fused?: boolean;
+  /**
+   * True once he has retired. He stays in the player list for the record book
+   * but never ages again and never returns to free agency.
+   */
+  retired?: boolean;
   /** Team that drafted him, used for draft-surplus accounting. */
   draftedBy?: string | null;
   /** Season the rookie deal began. */
   draftSeason?: number;
   /** First season the player actually played for his current team (1 at save creation). */
   joinedSeason?: number;
-  /** Hand-authored cornerstone ratings, never rebuilt by a ratings migration. */
-  cornerstone?: boolean;
   /**
    * True for a player dropped by the Hall of Fame league, whose ratings keep a
    * premium over the normal tier curve when they are rebuilt.
@@ -262,8 +267,8 @@ export interface GameState {
   version: number;
   /** Ratings revision, used to rebuild player attributes once after a rebalance. */
   ratingsVersion?: number;
-  /** Set once the two tier-1 cornerstones have been added to this career. */
-  cornerstonesVersion?: number;
+  /** Set once fused contracts have been re-priced onto the fused-deal discount. */
+  fusedSalaryVersion?: number;
   seed: number;
   rngState: number;
   season: number;
@@ -307,8 +312,23 @@ export interface GameState {
   clubHwd?: Record<string, number>;
   /** Set once the CPU clubs' starting HWD airdrop has been applied to this save. */
   clubHwdVersion?: number;
+  /** Set once the raised starting HWD float has been applied to this save. */
+  hwdGrantVersion?: number;
   /** HWD set aside from the 5% marketplace fee and reserved for development. */
   devFund?: number;
+  /**
+   * HWD-to-training-points conversions: the season and HWD spent for the season
+   * cap, plus the calendar day and HWD spent on it for the daily cap. A new
+   * season or day resets its own cap.
+   */
+  tpSwap?: { season: number; hwd: number; day?: string; dayHwd?: number };
+  /**
+   * When the next season may tip off (ISO). Opening a season starts a 24-hour
+   * wait; an absent value means the season is ready right now.
+   */
+  seasonReadyAt?: string;
+  /** Calendar day and paid skips used, for the daily skip cap. */
+  seasonSkip?: { day: string; count: number };
   /** Player NFTs other clubs are offering on the marketplace. */
   market?: MarketListing[];
   /**

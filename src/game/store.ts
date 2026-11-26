@@ -1,6 +1,12 @@
-import type { GameState } from './types';
-import { MAX_LEVEL, RATINGS_VERSION } from './data';
-import { addCornerstones, defaultLineupFor, resetPlayerRatings } from './engine';
+import type { GameState, Player } from './types';
+import { LEAGUE_MIN_SALARY, MAX_LEVEL, RATINGS_VERSION } from './data';
+import {
+  capFor,
+  defaultLineupFor,
+  resetPlayerRatings,
+  salaryDemand,
+  SEASON_COOLDOWN_ENABLED,
+} from './engine';
 import { CLUB_HWD_START, HWD_STARTING, refreshMarketListings } from './market';
 
 const LEGACY_KEY = 'hardwood-dynasty-save-v1';
@@ -67,6 +73,9 @@ function migrate(parsed: GameState): GameState | null {
   const legacy = parsed as GameState & { tradeOffers?: unknown; tradeBlock?: unknown };
   delete legacy.tradeOffers;
   delete legacy.tradeBlock;
+  // The season clock is off while long seasons are tested: clear any wait a
+  // save picked up while it was on.
+  if (!SEASON_COOLDOWN_ENABLED) delete parsed.seasonReadyAt;
   if (!parsed.scouted) parsed.scouted = [];
   if (!parsed.devReport) parsed.devReport = [];
   if (!parsed.settings) parsed.settings = { difficulty: 'standard', scenario: 'rebuild' };
@@ -103,10 +112,41 @@ function migrate(parsed: GameState): GameState | null {
     resetPlayerRatings(parsed.players);
     parsed.ratingsVersion = RATINGS_VERSION;
   }
-  // Careers created before the cornerstones existed get them added once.
-  if (parsed.cornerstonesVersion !== 1) {
-    addCornerstones(parsed);
-    parsed.cornerstonesVersion = 1;
+  // The raised opening float is applied once to careers saved on the old one.
+  // Bumped to version 2 when the starting balance moved to 5,000 HWD, so
+  // saves that already received the 2,000 top-up are lifted to the new float.
+  if (parsed.hwdGrantVersion !== 2) {
+    parsed.hwd = Math.max(parsed.hwd ?? 0, HWD_STARTING);
+    parsed.hwdGrantVersion = 2;
+  }
+  // The two hand-authored cornerstones are gone, so every career now opens
+  // from the same tier-5 roster. Older saves lose them here, and anything that
+  // still pointed at them (rotation, collection, listings) is cleaned up.
+  let droppedCornerstones = false;
+  for (const player of Object.values(parsed.players)) {
+    if (!(player as Player & { cornerstone?: boolean }).cornerstone) continue;
+    delete parsed.players[player.id];
+    droppedCornerstones = true;
+  }
+  if (droppedCornerstones) {
+    parsed.freeAgents = parsed.freeAgents.filter((id) => parsed.players[id]);
+    parsed.stash = (parsed.stash ?? []).filter((id) => parsed.players[id]);
+    parsed.market = (parsed.market ?? []).filter((entry) => parsed.players[entry.playerId]);
+    parsed.lineup = defaultLineupFor(parsed);
+  }
+  // Fusion mints created before the fused-deal discount kept a full-market
+  // salary. Cut every such contract back to the demand the engine charges
+  // today, but never raise one: a fused deal already below the demand simply
+  // predates later cap growth, and lifting it mid-contract could push a roster
+  // over the cap. It runs after the ratings rebuild above so the demand is
+  // based on the rating that rebuild produces.
+  if (parsed.fusedSalaryVersion !== 1) {
+    for (const player of Object.values(parsed.players)) {
+      if (!player.fused) continue;
+      const demand = Math.max(LEAGUE_MIN_SALARY, salaryDemand(player, capFor(parsed)));
+      player.salary = Math.min(player.salary, demand);
+    }
+    parsed.fusedSalaryVersion = 1;
   }
   return parsed;
 }

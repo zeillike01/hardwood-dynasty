@@ -13,7 +13,10 @@ import {
   signedPlayers,
   simulateNextRound,
   simulatePlayoffGame,
-  startNextSeason,
+  advanceSeason,
+  seasonReady,
+  seasonSkipQuote,
+  skipSeasonWait,
   waivePlayer,
 } from './game/engine';
 import { ROSTER_MIN, SKILLS } from './game/data';
@@ -32,6 +35,7 @@ import { RosterView } from './views/Roster';
 import { LeagueView } from './views/League';
 import { PlayoffsView } from './views/Playoffs';
 import { OffseasonView } from './views/Offseason';
+import { SeasonAdvance } from './components/SeasonAdvance';
 import { HistoryView } from './views/History';
 import { OfficeView } from './views/Office';
 import { MarketView } from './views/Market';
@@ -324,6 +328,10 @@ export default function App() {
       );
       return;
     }
+    if (!seasonReady(settled)) {
+      notify('The next season has not opened yet — wait it out or pay to skip the clock.', false);
+      return;
+    }
     const expired = pendingContractPlayers(settled, settled.userTeamId);
     if (expired.length) {
       const names = expired.map((player) => player.name).join(', ');
@@ -335,7 +343,7 @@ export default function App() {
         return;
       }
     }
-    const next = startNextSeason(settled);
+    const next = advanceSeason(settled);
     if (next === settled) {
       notify('You need a legal roster first.', false);
       return;
@@ -349,6 +357,44 @@ export default function App() {
           : 'Hall of Fame bracket settled. '
         : '';
     notify(`${hofNote}Season ${next.season} tips off.`, true);
+  };
+
+  const skipSeason = () => {
+    // Every wait-clearing path settles the bracket first, same as a free start.
+    const settled = finishHofLeague(game);
+    const signed = signedPlayers(settled, settled.userTeamId);
+    if (signed.length < ROSTER_MIN) {
+      notify(
+        `You need ${ROSTER_MIN - signed.length} more player${
+          ROSTER_MIN - signed.length === 1 ? '' : 's'
+        } under contract.`,
+        false,
+      );
+      return;
+    }
+    const quote = seasonSkipQuote(settled);
+    if (quote.blocked) {
+      notify(quote.blocked, false);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Pay ${quote.cost} HWD to open season ${settled.season + 1} now? The fee goes to the development fund.`,
+      )
+    ) {
+      return;
+    }
+    const result = skipSeasonWait(settled);
+    if (result.error || !result.state) {
+      notify(result.error ?? 'That skip could not be completed.', false);
+      return;
+    }
+    setGame(result.state);
+    setTab('dashboard');
+    notify(
+      `Skipped the wait for ${quote.cost} HWD. Season ${result.state.season} tips off.`,
+      true,
+    );
   };
 
   const newCareer = () => {
@@ -372,10 +418,6 @@ export default function App() {
 
   const waive = (id: string) => {
     const player = game.players[id];
-    if (player.cornerstone) {
-      notify(`${player.name} is a cornerstone and can never be waived.`, false);
-      return false;
-    }
     const hit = player.salary * Math.max(0, player.years);
     const note = hit > 0 ? ` ${money(hit)} of salary stays on the cap as dead money.` : '';
     if (!window.confirm(`Waive ${player.name}?${note}`)) {
@@ -500,9 +542,14 @@ export default function App() {
             </button>
           )}
           {phase === 'offseason' && (
-            <button className="tab-action" onClick={startSeason}>
-              Start season {game.season + 1}
-            </button>
+            <SeasonAdvance
+              state={game}
+              ready={signedPlayers(game, game.userTeamId).length >= ROSTER_MIN}
+              label={`Start season ${game.season + 1}`}
+              className="tab-action"
+              onStart={startSeason}
+              onSkip={skipSeason}
+            />
           )}
           {phase === 'regular' && (
             <button className="ghost-tab" onClick={simSeason}>
@@ -594,6 +641,7 @@ export default function App() {
             state={game}
             onState={setGame}
             onStartSeason={startSeason}
+            onSkipSeason={skipSeason}
             notify={notify}
             onOpenPlayer={setPlayerId}
           />

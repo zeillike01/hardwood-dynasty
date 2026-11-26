@@ -3,15 +3,25 @@ import type { GameState } from '../game/types';
 import {
   buyMarketPlayer,
   capSpaceOf,
+  convertHwdToTrainingPoints,
+  hofRosterLocked,
   rosterOf,
   sellPlayerToMarket,
 } from '../game/engine';
 import {
+  HWD_TP_DAILY_CAP,
+  HWD_TP_MIN,
+  HWD_TP_RATE,
+  HWD_TP_SEASON_CAP,
   MARKET_FEE_RATE,
   canListOnMarket,
   clubHwdBalance,
   devFundBalance,
   hwdBalance,
+  hwdTpQuote,
+  hwdTpRemaining,
+  hwdTpRemainingToday,
+  hwdTpSpent,
   marketBlockReason,
   marketFee,
   marketValue,
@@ -32,6 +42,7 @@ export function MarketView({
   onOpenPlayer: (id: string) => void;
 }) {
   const [asks, setAsks] = useState<Record<string, number>>({});
+  const [convertHwd, setConvertHwd] = useState(HWD_TP_MIN);
   const balance = hwdBalance(state);
   const devFund = devFundBalance(state);
   const rivalHwd = Object.keys(state.teams)
@@ -42,6 +53,33 @@ export function MarketView({
   const rosterFull = roster.length >= ROSTER_MAX;
   const capSpace = capSpaceOf(state, state.userTeamId);
   const feePercent = Math.round(MARKET_FEE_RATE * 100);
+  const tpRemaining = hwdTpRemaining(state);
+  const todayRemaining = hwdTpRemainingToday(state);
+  const convertMax = Math.min(tpRemaining, todayRemaining, balance);
+  const wanted = Number.isFinite(convertHwd) ? Math.floor(convertHwd) : 0;
+  const convertAmount = Math.min(Math.max(0, wanted), Math.max(0, convertMax));
+  const quote = hwdTpQuote(convertAmount);
+  const deskLocked = hofRosterLocked(state);
+  const convert = () => {
+    if (convertAmount < HWD_TP_MIN) {
+      notify(`You need at least ${HWD_TP_MIN} convertible HWD this season.`, false);
+      return;
+    }
+    if (
+      !window.confirm(
+        `Convert ${convertAmount} HWD into ${quote.tp} training points?`,
+      )
+    ) {
+      return;
+    }
+    const result = convertHwdToTrainingPoints(state, convertAmount);
+    if (result.error || !result.state) {
+      notify(result.error ?? 'That conversion could not be completed.', false);
+      return;
+    }
+    onState(result.state);
+    notify(`Converted ${convertAmount} HWD into ${quote.tp} training points.`, true);
+  };
   const sell = (id: string) => {
     const player = state.players[id];
     const ask = Math.max(1, Math.round(asks[id] ?? marketValue(player)));
@@ -111,7 +149,7 @@ export function MarketView({
           <div className="stat-tile card">
             <span className="eyebrow">Development fund</span>
             <strong>{devFund} HWD</strong>
-            <span className="muted small">Fees collected from sales</span>
+            <span className="muted small">Sale and fusion fees</span>
           </div>
           <div className="stat-tile card">
             <span className="eyebrow">Sale fee</span>
@@ -119,6 +157,54 @@ export function MarketView({
             <span className="muted small">Paid to the development fund</span>
           </div>
         </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Convert HWD to training points</h2>
+            <p className="muted small">
+              The league desk buys HWD back at {HWD_TP_RATE} training points per token, with no
+              fee. The desk takes at most {HWD_TP_DAILY_CAP} HWD a day and {HWD_TP_SEASON_CAP} HWD
+              a season: you have converted {hwdTpSpent(state)} of {HWD_TP_SEASON_CAP} HWD this
+              season, so {tpRemaining} HWD can still be sold ({todayRemaining} today).
+            </p>
+          </div>
+        </div>
+        <div className="hwd-convert">
+          <input
+            className="market-ask"
+            type="number"
+            min={HWD_TP_MIN}
+            max={Math.max(0, convertMax)}
+            step={1}
+            value={convertHwd}
+            aria-label="HWD to convert into training points"
+            onChange={(event) => setConvertHwd(Number(event.target.value))}
+          />
+          <span className="muted small">
+            {convertAmount} HWD → <strong>{quote.tp} TP</strong>
+          </span>
+          <button
+            className="btn small"
+            disabled={deskLocked || convertAmount < HWD_TP_MIN}
+            title={
+              deskLocked
+                ? 'The desk is closed until the Hall of Fame bracket finishes'
+                : convertMax < HWD_TP_MIN
+                  ? `You need at least ${HWD_TP_MIN} convertible HWD (${todayRemaining} left today, ${tpRemaining} this season)`
+                  : `Convert ${convertAmount} HWD into ${quote.tp} training points`
+            }
+            onClick={convert}
+          >
+            Convert
+          </button>
+        </div>
+        {deskLocked && (
+          <p className="muted small">
+            The desk is closed until your Hall of Fame bracket finishes.
+          </p>
+        )}
       </section>
 
       <section className="card">
@@ -212,9 +298,10 @@ export function MarketView({
           <div>
             <h2>Sell players</h2>
             <p className="muted small">
-              Valuation is a guideline, not a cap: you own the NFT, so name your own ask. A rival
-              club still has to hold that HWD and fit his contract under its cap; you receive the
-              price net of the {feePercent}% fee. Make sure you can spare him.
+              Name your own ask, but rivals buy with their heads: a club only pays up to about a
+              quarter over the valuation, and only if he would crack its rotation. It also has to
+              hold that HWD and fit his contract under its cap; you receive the price net of the
+              {feePercent}% fee. Make sure you can spare him.
             </p>
           </div>
         </div>

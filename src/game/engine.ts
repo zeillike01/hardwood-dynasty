@@ -16,6 +16,7 @@ import {
   BUYOUT_RATE,
   CAP,
   CAP_GROWTH,
+  LEAGUE_MIN_SALARY,
   CASH_PER_BLOCK,
   DIFFICULTY,
   DRAFT_TIER3_CHANCE,
@@ -71,17 +72,33 @@ import {
   type FacilityKey,
 } from './data';
 import {
+  accountSeasons,
   canListOnMarket,
   CLUB_HWD_START,
   clubHwdBalance,
   devFundBalance,
+  FUSION_BOTTOM_TIER,
+  FUSION_CARRY_LEVELS,
+  FUSION_RATING_INHERITANCE,
   fusionCheck,
   fusionHwdCost,
+  FUSION_MIN_PLAYERS,
+  FUSION_SALARY_MULTIPLIER,
+  FUSION_TOP_TIER,
   HWD_STARTING,
+  HWD_TP_MIN,
   hwdBalance,
+  hwdTpQuote,
+  hwdTpRemaining,
+  hwdTpRemainingToday,
+  hwdTpSpent,
+  hwdTpSpentToday,
+  todayKey,
   marketBlockReason,
   marketFee,
+  marketMaxBid,
   MARKET_MIN_PRICE,
+  marketValue,
   refreshMarketListings,
 } from './market';
 
@@ -152,10 +169,31 @@ function emptyStats(): StatLine {
   return { gp: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0 };
 }
 
-export function marketSalary(overall: number, rng: Rng): number {
+/**
+ * Ratings at or above this point use the flattened star curve. Below it the
+ * original market curve is untouched, so role players are priced as before.
+ */
+const STAR_CURVE_START = 70;
+
+/** How much of the above-70 premium survives the star compression. */
+const STAR_CURVE_COMPRESSION = 0.73;
+
+/**
+ * Share of the cap a player's rating alone commands. The curve keeps climbing
+ * with rating, but from 70 up it is compressed so three 95 OVR stars can share
+ * a roster with a supporting cast instead of eating the whole cap.
+ */
+export function talentShareOf(overall: number): number {
   const rating = clamp((overall - 48) / 51, 0, 1);
-  const share = 0.35 * Math.pow(rating, 2.2) * rng.range(0.9, 1.1);
-  return Math.round(clamp(share * CAP, 1.1, 0.35 * CAP) * 10) / 10;
+  const raw = 0.35 * Math.pow(rating, 2.2);
+  if (overall <= STAR_CURVE_START) return raw;
+  const atStart = 0.35 * Math.pow((STAR_CURVE_START - 48) / 51, 2.2);
+  return atStart + (raw - atStart) * STAR_CURVE_COMPRESSION;
+}
+
+export function marketSalary(overall: number, rng: Rng): number {
+  const share = talentShareOf(overall) * rng.range(0.9, 1.1);
+  return Math.round(clamp(share * CAP, LEAGUE_MIN_SALARY, 0.35 * CAP) * 10) / 10;
 }
 
 /**
@@ -231,8 +269,8 @@ function genPlayer(
     potential,
     tier,
     level: STARTING_LEVEL,
-    salary: Math.max(
-      1.1 * (opts.salaryScale ?? 1),
+          salary: Math.max(
+        LEAGUE_MIN_SALARY * (opts.salaryScale ?? 1),
       Math.round(marketSalary(overall, rng) * ageSalaryFactor(age) * (opts.salaryScale ?? 1) * 10) / 10,
     ),
     years: rng.int(4) + 1,
@@ -244,13 +282,12 @@ function genPlayer(
 }
 
 /**
- * Create an unassigned player for a league reward (the Hall of Fame league's
- * champion NFT). The caller signs him; ids and names are unique to the save.
- */
-/**
  * Mint a brand-new NFT from a fusion: an 18-year-old with fresh ratings at the
- * target tier, on a three-year rookie-scale deal. He is unassigned until the
- * caller signs him or stores him.
+ * target tier. He is unassigned until the caller signs him or stores him.
+ * `baseRating` anchors the mint to the rating a fusion inherits; without it the
+ * tier base is used. The fusion caller re-prices his three-year deal after the
+ * carried levels land, so it reflects his inherited rating rather than the
+ * pre-training base.
  */
 export function makeFreshNft(
   state: GameState,
@@ -258,25 +295,38 @@ export function makeFreshNft(
   tier: Player['tier'],
   pos: Pos,
   potentialBonus = 0,
+  potentialFloor = 0,
+  baseRating?: number,
 ): Player {
   const used = usedNames(state);
   let id = `nft_${state.season}_${rng.int(1_000_000)}`;
   let guard = 0;
   while (state.players[id] && guard++ < 50) id = `nft_${state.season}_${rng.int(1_000_000)}`;
   const growth = rng.int(10) + 4 + (tier - 1) * 3 + potentialBonus;
-  const player = genPlayer(rng, id, pos, TIER_BASE[tier] + rng.range(-3, 2), used, {
+  const rating = baseRating ?? TIER_BASE[tier] + rng.range(-3, 2);
+  const player = genPlayer(rng, id, pos, rating, used, {
     ageMin: 18,
     ageMax: 18,
     potentialBoost: growth,
     tier,
   });
-  player.salary = Math.round(capFor(state) * 0.08 * 10) / 10;
+  // A fusion mint can always grow into the best player that was burned into
+  // him, so the inputs' ratings raise his ceiling instead of being pure fuel.
+  player.potential = clamp(Math.max(player.potential, potentialFloor), player.overall, 99);
+  player.fused = true;
+  // mintFusionPlayer prices the final deal after the carried levels land; this
+  // placeholder keeps the fresh NFT legal in the meantime.
+  player.salary = LEAGUE_MIN_SALARY;
   player.years = ROOKIE_YEARS;
   player.rookie = false;
   player.teamId = null;
   return player;
 }
 
+/**
+ * Create an unassigned player for a league reward (the Hall of Fame league's
+ * champion NFT). The caller signs him; ids and names are unique to the save.
+ */
 export function makeRewardPlayer(
   state: GameState,
   rng: Rng,
@@ -295,67 +345,6 @@ export function makeRewardPlayer(
   // Keeps the league's premium over the normal tier curve across rating rebuilds.
   player.hofReward = true;
   return player;
-}
-
-interface CornerstoneSeed {
-  name: string;
-  pos: Pos;
-  age: number;
-  attrs: Attrs;
-  potential: number;
-}
-
-const CORNERSTONES: CornerstoneSeed[] = [
-  {
-    name: 'Kai Vantrell',
-    pos: 'PG',
-    age: 18,
-    attrs: {
-      inside: 78,
-      outside: 90,
-      playmaking: 95,
-      defense: 84,
-      rebounding: 55,
-      athleticism: 92,
-    },
-    potential: 97,
-  },
-  {
-    name: 'Desmond Ayo',
-    pos: 'C',
-    age: 18,
-    attrs: {
-      inside: 95,
-      outside: 65,
-      playmaking: 70,
-      defense: 92,
-      rebounding: 90,
-      athleticism: 82,
-    },
-    potential: 95,
-  },
-];
-
-function makeCornerstone(seed: CornerstoneSeed, id: string, name: string, teamId: string): Player {
-  return {
-    id,
-    name,
-    pos: seed.pos,
-    age: seed.age,
-    attrs: seed.attrs,
-    overall: computeOverall(seed.pos, seed.attrs),
-    potential: seed.potential,
-    tier: 1,
-    level: STARTING_LEVEL,
-    salary: 1,
-    years: 10,
-    teamId,
-    stats: emptyStats(),
-    injuryGames: 0,
-    injury: null,
-    option: null,
-    cornerstone: true,
-  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -729,8 +718,6 @@ function ratingsSeed(text: string): number {
  */
 export function resetPlayerRatings(players: Record<string, Player>): void {
   for (const player of Object.values(players)) {
-    // Cornerstones carry hand-authored ratings that a migration must not flatten.
-    if (player.cornerstone) continue;
     const rng = new Rng(ratingsSeed(`${player.id}:${player.tier}:${player.level}`));
     const target =
       TIER_BASE[player.tier] +
@@ -790,14 +777,49 @@ export function trainPlayer(state: GameState, playerId: string): GameState {
 }
 
 /**
- * Merge two or three fully trained tier-3 players into one tier 2 player. The
- * inputs are burned permanently: the surviving player is the highest rated of
- * the group, and every consumed player adds a small attribute bonus.
+ * Mint what a fusion buys: an 18-year-old a tier above the burned group whose
+ * rating is inherited from the best burned player instead of the tier base, so
+ * the trade returns a player priced against the material that made him rather
+ * than a level-1 project far below it.
  */
+function mintFusionPlayer(
+  state: GameState,
+  rng: Rng,
+  inputTier: Player['tier'],
+  pos: Pos,
+  anchor: Player,
+): Player {
+  const target = clamp(Math.round(anchor.overall * FUSION_RATING_INHERITANCE), 25, 99);
+  // The mint must be built from a base below the target so the carried levels
+  // land on the inherited rating; the tier base stays a floor.
+  const base = clamp(
+    target - FUSION_CARRY_LEVELS,
+    TIER_BASE[(inputTier - 1) as Player['tier']],
+    99,
+  );
+  const nft = makeFreshNft(
+    state,
+    rng,
+    (inputTier - 1) as Player['tier'],
+    pos,
+    4,
+    anchor.overall,
+    base,
+  );
+  for (let level = 0; level < FUSION_CARRY_LEVELS; level++) applyTrainingLevel(nft);
+  // Price the finished mint off the rating he actually inherits, not his
+  // pre-training base: a weak bench consolidation gets a cheap deal and a
+  // star-level mint carries a star-level salary. salaryDemand already applies
+  // the fused-player discount and the age curve; the league minimum keeps a low
+  // target legal.
+  nft.salary = Math.max(LEAGUE_MIN_SALARY, salaryDemand(nft, capFor(state)));
+  return nft;
+}
+
 /**
- * Fuse 2-3 fully trained players into one brand-new NFT a tier above them. The
+ * Fuse 3 fully trained players into one brand-new NFT a tier above them. The
  * inputs are destroyed for good; the mint is a fresh 18-year-old with random
- * ratings on a rookie-scale deal. If his contract cannot fit on the roster or
+ * ratings on a fused-player deal. If his contract cannot fit on the roster or
  * under the cap he is stored in your collection instead of signed.
  */
 export function fusePlayers(state: GameState, playerIds: string[]): MarketResult {
@@ -806,7 +828,8 @@ export function fusePlayers(state: GameState, playerIds: string[]): MarketResult
   if (!check.ok) return { error: check.reason ?? 'Those players cannot be fused.' };
 
   const inputs = playerIds.map((id) => state.players[id]);
-  const cost = fusionHwdCost(inputs[0].tier);
+  const anchor = [...inputs].sort((a, b) => b.overall - a.overall)[0];
+  const cost = fusionHwdCost(anchor.overall);
 
   const s = clone(state);
   // The merge burns on-chain assets and pays for the mint in HWD. The fee is
@@ -814,10 +837,10 @@ export function fusePlayers(state: GameState, playerIds: string[]): MarketResult
   s.hwd = hwdBalance(s) - cost;
   s.devFund = devFundBalance(s) + cost;
   const rng = new Rng(s.rngState);
-  const tier = (inputs[0].tier - 1) as Player['tier'];
-  const anchor = [...inputs].sort((a, b) => b.overall - a.overall)[0];
-  // The three burned inputs buy the mint a little extra room to grow.
-  const nft = makeFreshNft(s, rng, tier, anchor.pos, 4);
+  // The three burned inputs buy the mint a little extra room to grow, and the
+  // best of them sets both the mint's inherited rating and a floor under his
+  // ceiling.
+  const nft = mintFusionPlayer(s, rng, inputs[0].tier, anchor.pos, anchor);
 
   for (const id of playerIds) {
     delete s.players[id];
@@ -855,7 +878,7 @@ export function fusePlayers(state: GameState, playerIds: string[]): MarketResult
   s.log.unshift({
     id: `log_${s.season}_fusion_${nft.id}`,
     season: s.season,
-    text: `Fusion: ${inputs.map((player) => player.name).join(', ')} burned into ${nft.name}, a new tier ${nft.tier} NFT at 18 (${nft.overall} OVR) for ${cost} HWD to the development fund.`,
+    text: `Fusion: ${inputs.map((player) => player.name).join(', ')} burned into ${nft.name}, a new tier ${nft.tier} NFT at level ${nft.level} (${nft.overall} OVR, ${nft.potential} potential) for ${cost} HWD to the development fund.`,
   });
   if (!signed) {
     s.log.unshift({
@@ -899,12 +922,73 @@ export function signStashedPlayer(state: GameState, playerId: string): MarketRes
   const live = s.players[playerId];
   live.teamId = s.userTeamId;
   live.joinedSeason = acquisitionSeason(s);
+  // An expired stored NFT arrives on a fresh minimum deal instead of an
+  // already-finished contract.
+  if (live.years <= 0) live.years = 1;
   s.stash = (s.stash ?? []).filter((id) => id !== playerId);
   sanitizeLineup(s);
   s.log.unshift({
     id: `log_${s.season}_stash_sign_${playerId}`,
     season: s.season,
     text: `Signed ${live.name} (tier ${live.tier}, ${live.overall} OVR) from your stored NFTs.`,
+  });
+  return { state: s };
+}
+
+/**
+ * Sell HWD back to the league for training points. The desk is a sink, not a
+ * market: the tokens leave the wallet and buy TP at HWD_TP_RATE with no cut.
+ * A per-season and a per-day cap keep TP from being bought in bulk, and each
+ * cap is stored with the season or day it belongs to, so both reopen on their
+ * own clock.
+ */
+export function convertHwdToTrainingPoints(
+  state: GameState,
+  hwd: number,
+  now = new Date(),
+): { state?: GameState; error?: string } {
+  if (hofRosterLocked(state)) {
+    return { error: 'Your roster is locked until the Hall of Fame bracket finishes.' };
+  }
+  const amount = Math.floor(hwd);
+  if (!Number.isFinite(amount) || amount < HWD_TP_MIN) {
+    return { error: `The desk converts at least ${HWD_TP_MIN} HWD at a time.` };
+  }
+  const remaining = hwdTpRemaining(state);
+  if (remaining <= 0) {
+    return { error: 'You have already converted your HWD for this season.' };
+  }
+  if (amount > remaining) {
+    return { error: `Only ${remaining} HWD can still be converted this season.` };
+  }
+  const remainingToday = hwdTpRemainingToday(state, now);
+  if (remainingToday <= 0) {
+    return { error: 'You have already converted your HWD for today.' };
+  }
+  if (amount > remainingToday) {
+    return { error: `Only ${remainingToday} HWD can be converted today.` };
+  }
+  const balance = hwdBalance(state);
+  if (amount > balance) {
+    return { error: `That conversion costs ${amount} HWD and you have ${balance}.` };
+  }
+
+  const { tp } = hwdTpQuote(amount);
+  const spent = hwdTpSpent(state);
+  const spentToday = hwdTpSpentToday(state, now);
+  const s = clone(state);
+  s.hwd = balance - amount;
+  s.teams[s.userTeamId].trainingPoints += tp;
+  s.tpSwap = {
+    season: s.season,
+    hwd: spent + amount,
+    day: todayKey(now),
+    dayHwd: spentToday + amount,
+  };
+  s.log.unshift({
+    id: `log_${s.season}_hwd_tp_${s.log.length}`,
+    season: s.season,
+    text: `Conversion desk: ${amount} HWD turned into ${tp} training points.`,
   });
   return { state: s };
 }
@@ -1084,35 +1168,16 @@ export function createLeague(
     if (userRoster[3]) userRoster[3].tier = 3;
     resetPlayerRatings(Object.fromEntries(userRoster.map((p) => [p.id, p])));
   } else if (scenario === 'expansion') {
-    // Shed four base players so the two cornerstones still leave an eight-man roster.
-    for (const player of userRoster.slice(-4)) {
+    // Shed two base players so the expansion club opens at the roster minimum.
+    for (const player of userRoster.slice(-2)) {
       player.teamId = null;
       freeAgents.push(player.id);
     }
   }
 
-  // Two tier-1 cornerstones join whichever team the user takes over, on
-  // decade-long team-friendly deals.
-  const reserveName = (name: string) => {
-    if (!used.has(name)) {
-      used.add(name);
-      return name;
-    }
-    let suffix = 2;
-    while (used.has(`${name} ${suffix}`)) suffix++;
-    used.add(`${name} ${suffix}`);
-    return `${name} ${suffix}`;
-  };
-  for (const entry of CORNERSTONES) {
-    const player = makeCornerstone(entry, `p${nextId++}`, reserveName(entry.name), team.id);
-    player.joinedSeason = 1;
-    players[player.id] = player;
-  }
-
   const state: GameState = {
     version: 1,
     ratingsVersion: RATINGS_VERSION,
-    cornerstonesVersion: 1,
     seed,
     rngState: rng.state,
     season: 1,
@@ -1150,11 +1215,6 @@ export function createLeague(
         season: 1,
         text: `You take over the ${team.city} ${team.name} as general manager.`,
       },
-      {
-        id: 'log-cornerstones',
-        season: 1,
-        text: `Kai Vantrell and Desmond Ayo join the ${team.name} as tier-1 cornerstones on 10-year, $1.0M deals.`,
-      },
     ],
   };
   state.market = refreshMarketListings(state);
@@ -1164,45 +1224,6 @@ export function createLeague(
 /* ------------------------------------------------------------------ */
 /* Lineups                                                             */
 /* ------------------------------------------------------------------ */
-
-/**
- * Retrofits the two tier-1 cornerstones into a career saved before they were
- * introduced. Idempotent: it only adds players whose names are missing.
- */
-export function addCornerstones(state: GameState): void {
-  const teamId = state.userTeamId;
-  const roster = rosterOf(state, teamId);
-  const present = new Set(roster.map((player) => player.name));
-  const missing = CORNERSTONES.filter((entry) => !present.has(entry.name));
-  if (!missing.length) return;
-  if (roster.length + missing.length > ROSTER_MAX) return;
-
-  let nextId = 0;
-  for (const id of Object.keys(state.players)) {
-    const match = /^p(\d+)$/.exec(id);
-    if (match) nextId = Math.max(nextId, Number(match[1]) + 1);
-  }
-
-  const used = new Set(Object.values(state.players).map((player) => player.name));
-  for (const entry of missing) {
-    let name = entry.name;
-    if (used.has(name)) {
-      let suffix = 2;
-      while (used.has(`${name} ${suffix}`)) suffix++;
-      name = `${name} ${suffix}`;
-    }
-    used.add(name);
-    const player = makeCornerstone(entry, `p${nextId++}`, name, teamId);
-    state.players[player.id] = player;
-  }
-
-  state.lineup = defaultLineupFor(state);
-  state.log.unshift({
-    id: `log_${state.season}_cornerstones`,
-    season: state.season,
-    text: `Kai Vantrell and Desmond Ayo join the ${state.teams[teamId].name} as tier-1 cornerstones on 10-year, $1.0M deals.`,
-  });
-}
 
 /**
  * Set the user's starting five. The array order is PG, SG, SF, PF, C; every
@@ -1453,8 +1474,9 @@ export function simGame(
 ): SimResult {
   const homeRoster = rosterOf(state, homeId);
   const awayRoster = rosterOf(state, awayId);
-  // Every game on the schedule counts as one game of recovery.
-  for (const player of [...homeRoster, ...awayRoster]) recoverOneGame(player);
+  // Snapshot who was already hurt at tip-off: they sit this game out and only
+  // start ticking once the final buzzer sounds.
+  const hurtAtTipOff = [...homeRoster, ...awayRoster].filter((player) => player.injuryGames > 0);
   const homeLineup = homeId === state.userTeamId ? state.lineup ?? [] : [];
   const awayLineup = awayId === state.userTeamId ? state.lineup ?? [] : [];
   const hp = teamProfile(homeRoster, homeLineup);
@@ -1479,6 +1501,10 @@ export function simGame(
   ] as const) {
     rollInjury(state, teamId, roster, box, rng);
   }
+
+  // Recovery happens after the game, never before it, so a player listed
+  // OUT 1 actually misses one more game.
+  for (const player of hurtAtTipOff) recoverOneGame(player);
 
   if (countStats) {
     for (const line of box) {
@@ -1742,13 +1768,12 @@ export function championOf(state: GameState): string | null {
 /**
  * Asking salary after a season: a convex share of the cap set by overall,
  * lifted by production and adjusted for age. Pricing in cap shares keeps a
- * league whose ratings rise over time inside the cap: a 99 OVR star tops out
- * up to 38% of it with production, so two stars plus a supporting cast fit and
- * four do not.
+ * league whose ratings rise over time inside the cap: the star curve tops a
+ * 95 OVR talent share out at 23% of it, and even a young 26 PPG scorer is
+ * capped at 26%, so three stars plus a minimum roster fit.
  */
 export function salaryDemand(player: Player, cap = CAP): number {
-  const rating = clamp((player.overall - 48) / 51, 0, 1);
-  const talentShare = 0.35 * Math.pow(rating, 2.2);
+  const talentShare = talentShareOf(player.overall);
   const ppg = player.stats.gp ? player.stats.pts / player.stats.gp : 0;
   const apg = player.stats.gp ? player.stats.ast / player.stats.gp : 0;
   // Production is an additive cap share, so it still matters for a player whose
@@ -1759,8 +1784,13 @@ export function salaryDemand(player: Player, cap = CAP): number {
   else if (ppg >= 16) production = 0.05;
   else if (ppg >= 11) production = 0.02;
   if (apg >= 8) production += 0.02;
-  const share = clamp((talentShare + production) * ageSalaryFactor(player.age), 0.016, 0.38);
-  return Math.round(cap * share * 10) / 10;
+  const share = clamp((talentShare + production) * ageSalaryFactor(player.age), 0.016, 0.26);
+  // A fused player is discounted once, on the freshly computed demand: the age
+  // factor and the clamp have already done their work, and a later re-signing
+  // starts from the rating again, so the discount can never compound. League
+  // and Hall of Fame reward players are priced at the full market rate.
+  const rate = player.fused ? FUSION_SALARY_MULTIPLIER : 1;
+  return Math.round(cap * share * rate * 10) / 10;
 }
 
 function developPlayer(player: Player, rng: Rng) {
@@ -1805,6 +1835,62 @@ function trainCpuTeam(state: GameState, teamId: string) {
     return;
   }
 }
+
+/**
+ * A CPU club fuses on the same terms as an owner: three same-tier players at
+ * max level are burned for good, the HWD fee leaves its club balance for the
+ * development treasury, and the mint is a fresh 18-year-old a tier above them.
+ *
+ * A playoff club only spends players from the end of its bench; a club that just
+ * missed the playoffs is rebuilding and may melt its supporting cast instead. It
+ * always keeps its best player, needs depth to spare and one fusion per club per
+ * offseason, so this is never a hidden way for the CPU to get better for free.
+ */
+function cpuFuse(state: GameState, teamId: string, rng: Rng): void {
+  const roster = rosterOf(state, teamId);
+  if (roster.length < CPU_FUSION_ROSTER_MIN) return;
+  // A club that just missed the playoffs is rebuilding and will melt its
+  // supporting cast; a playoff club only ever spends players from the end of its
+  // bench, so a good team never fuses its way out of contention.
+  const rebuilding = conferenceRank(state, teamId) > PLAYOFF_TEAMS_PER_CONF;
+  const kept = [...roster].sort((a, b) => b.overall - a.overall);
+  const spare = kept.slice(rebuilding ? 1 : 9);
+  // Best tier first: 2 -> 1 is the move training cannot make for a CPU club.
+  for (let tier = FUSION_TOP_TIER + 1; tier <= FUSION_BOTTOM_TIER; tier++) {
+    const group = spare.filter(
+      (p) => p.tier === tier && p.level >= MAX_LEVEL,
+    );
+    if (group.length < FUSION_MIN_PLAYERS) continue;
+    const burned = group.sort((a, b) => a.overall - b.overall).slice(0, FUSION_MIN_PLAYERS);
+    const anchor = burned[burned.length - 1];
+    const fee = fusionHwdCost(anchor.overall);
+    if (clubHwdBalance(state, teamId) < fee) continue;
+    const probe = mintFusionPlayer(state, rng, tier as Player['tier'], anchor.pos, anchor);
+    // The mint must fit the cap the three burned deals leave behind; a club that
+    // cannot sign him does not burn three players for a prospect it cannot use.
+    const payrollAfter = payrollOf(state, teamId) - burned.reduce((sum, p) => sum + p.salary, 0);
+    if (payrollAfter + probe.salary > capFor(state) + 1e-9) return;
+
+    state.clubHwd = {
+      ...(state.clubHwd ?? {}),
+      [teamId]: clubHwdBalance(state, teamId) - fee,
+    };
+    state.devFund = devFundBalance(state) + fee;
+    for (const player of burned) {
+      delete state.players[player.id];
+    }
+    state.market = (state.market ?? []).filter(
+      (listing) => !burned.some((player) => player.id === listing.playerId),
+    );
+    probe.teamId = teamId;
+    probe.joinedSeason = acquisitionSeason(state);
+    state.players[probe.id] = probe;
+    return;
+  }
+}
+
+/** A CPU club needs this much depth before it will burn three players on a fusion. */
+const CPU_FUSION_ROSTER_MIN = 13;
 
 function fillCpuRosters(state: GameState, rng: Rng) {
   for (const team of Object.values(state.teams)) {
@@ -1901,7 +1987,48 @@ function cpuResignPlayers(state: GameState) {
   }
 }
 
-/** CPU clubs spend their cap room on the open market, stars first. */
+/**
+ * Could this club make room for an incoming player by releasing the weakest
+ * man on its roster? Only a clear upgrade is worth eating the rest of a deal
+ * as dead money, and a club never cuts below the roster minimum.
+ */
+function canReleaseFor(state: GameState, teamId: string, incoming: Player): boolean {
+  const roster = rosterOf(state, teamId);
+  if (roster.length < ROSTER_MAX) return true;
+  if (roster.length <= ROSTER_MIN) return false;
+  const weakest = [...roster].sort((a, b) => cpuPriority(a) - cpuPriority(b))[0];
+  return Boolean(weakest) && cpuPriority(incoming) >= cpuPriority(weakest) + 8;
+}
+
+/**
+ * Open a roster spot by waiving the weakest player. The remaining salary stays
+ * on the cap as dead money, exactly like a user waiver, so a rival cannot cut
+ * its way out of a bad contract and the payroll never shrinks by the move.
+ */
+function releaseWeakest(state: GameState, teamId: string, incoming: Player): void {
+  if (rosterOf(state, teamId).length < ROSTER_MAX) return;
+  const cut = [...rosterOf(state, teamId)].sort((a, b) => cpuPriority(a) - cpuPriority(b))[0];
+  if (!cut || cut === incoming) return;
+  if (cut.years > 0) {
+    state.teams[teamId].deadMoney = [
+      ...(state.teams[teamId].deadMoney ?? []),
+      { name: cut.name, salary: cut.salary, years: cut.years },
+    ];
+  }
+  cut.teamId = null;
+  cut.years = 0;
+  cut.option = null;
+  if (!state.freeAgents.includes(cut.id)) state.freeAgents.push(cut.id);
+}
+
+/**
+ * CPU clubs spend their cap room on the open market, stars first. A rival signs
+ * for one of two reasons: it still needs bodies to field a legal rotation, or
+ * the player is a clear upgrade on the weakest man it already has. The second
+ * reason is what makes a club with $50M of space chase a 94 OVR veteran instead
+ * of parking the money. Deals are written at `askingSalary`, the same price the
+ * user pays, so the CPU cannot hoover up stars at a stale bargain rate.
+ */
 function cpuSignFreeAgents(state: GameState, rng: Rng) {
   const teams = Object.values(state.teams).filter((team) => team.id !== state.userTeamId);
 
@@ -1914,16 +2041,18 @@ function cpuSignFreeAgents(state: GameState, rng: Rng) {
     }
     for (const team of order) {
       const roster = rosterOf(state, team.id);
-      if (roster.length >= ROSTER_MAX) continue;
+      const full = roster.length >= ROSTER_MAX;
       const space = capSpaceOf(state, team.id);
       const target = Math.min(12, 10 + (space >= 20 ? 2 : space >= 10 ? 1 : 0));
-      if (roster.length >= target) continue;
 
       // Keep enough room for a legal nine-man roster and the rookie class.
       const slotsShort = Math.max(0, 9 - roster.length);
       const budget = space - slotsShort * 0.02 * capFor(state) - 0.1 * capFor(state);
-      if (budget < 1.1) continue;
+              if (budget < LEAGUE_MIN_SALARY) continue;
 
+      const weakest = roster.length
+        ? Math.min(...roster.map((player) => cpuPriority(player)))
+        : 0;
       const needs = POSITIONS.filter(
         (pos) => roster.filter((player) => player.pos === pos).length < 2,
       );
@@ -1931,7 +2060,9 @@ function cpuSignFreeAgents(state: GameState, rng: Rng) {
         .map((id) => state.players[id])
         .filter(
           (player): player is Player =>
-            Boolean(player) && player.teamId === null && player.salary <= budget,
+            Boolean(player) &&
+            player.teamId === null &&
+            askingSalary(state, player) <= budget,
         )
         .sort((a, b) => {
           const needA = needs.includes(a.pos) ? 4 : 0;
@@ -1942,9 +2073,16 @@ function cpuSignFreeAgents(state: GameState, rng: Rng) {
       const pick = rng.chance(0.8)
         ? candidates[0]
         : candidates[Math.min(rng.int(3), candidates.length - 1)];
+      // Filling out the rotation is always worth a deal; beyond that a signing
+      // has to beat the weakest man under contract by a clear margin, and a
+      // full roster only opens up for a genuine upgrade.
+      if (full && !canReleaseFor(state, team.id, pick)) continue;
+      if (roster.length >= target && cpuPriority(pick) < weakest + 4) continue;
+      releaseWeakest(state, team.id, pick);
       pick.teamId = team.id;
       pick.rookie = false;
       pick.joinedSeason = acquisitionSeason(state);
+      pick.salary = askingSalary(state, pick);
       pick.years = pick.age <= 25 ? 3 : pick.age <= 30 ? 2 : 1;
       pick.option = null;
       state.freeAgents = state.freeAgents.filter((id) => id !== pick.id);
@@ -2039,12 +2177,28 @@ function cpuTradeMarket(state: GameState, rng: Rng) {
 }
 
 /** Rival market purchases per season, so an old board is never stripped in one go. */
-const CPU_MARKET_MOVES = 3;
+const CPU_MARKET_MOVES = 6;
 
 /** Overall of the weakest player in a club's nine-man rotation. */
 function rotationFloor(state: GameState, teamId: string): number {
   const roster = rosterOf(state, teamId).sort((a, b) => b.overall - a.overall);
   return roster.length ? roster[Math.min(8, roster.length - 1)].overall : 0;
+}
+
+/** Overall of the weakest player on a club's roster. */
+function rosterFloor(state: GameState, teamId: string): number {
+  const roster = rosterOf(state, teamId);
+  return roster.length ? Math.min(...roster.map((player) => player.overall)) : 0;
+}
+
+/**
+ * Would this club actually use the player? A rival pays for a rotation upgrade,
+ * or for depth that clearly beats the end of its bench while it still has room.
+ * Without this test a rival waved through any signing that fit its cap.
+ */
+function wouldPlay(state: GameState, teamId: string, player: Player): boolean {
+  if (player.overall > rotationFloor(state, teamId)) return true;
+  return rosterOf(state, teamId).length < 13 && player.overall >= rosterFloor(state, teamId) + 4;
 }
 
 /**
@@ -2075,19 +2229,23 @@ export function cpuMarketPass(state: GameState): void {
     const player = state.players[listing.playerId];
     if (!player || player.teamId !== listing.sellerTeamId) continue;
     if (rosterOf(state, listing.sellerTeamId).length <= ROSTER_MIN) continue;
+    // Never overpay an ask that has drifted past what the player is worth.
+    if (listing.price > marketMaxBid(player)) continue;
 
     const buyer = Object.values(state.teams)
       .filter((team) => team.id !== state.userTeamId)
       .filter((team) => team.id !== listing.sellerTeamId)
-      .filter((team) => rosterOf(state, team.id).length < ROSTER_MAX)
+      .filter((team) => canReleaseFor(state, team.id, player))
       .filter((team) => payrollOf(state, team.id) + player.salary <= cap + 1e-9)
       .filter((team) => clubHwdBalance(state, team.id) >= listing.price)
       // Only a club that would actually play him bids, and the weakest wins.
-      .filter((team) => rotationFloor(state, team.id) < player.overall)
+      .filter((team) => wouldPlay(state, team.id, player))
       .sort((a, b) => rotationFloor(state, a.id) - rotationFloor(state, b.id))[0];
     if (!buyer) continue;
 
     const fee = marketFee(listing.price);
+    // A full roster can still improve: the weakest deal is waived to dead money.
+    releaseWeakest(state, buyer.id, player);
     player.teamId = buyer.id;
     player.years = Math.max(1, player.years);
     player.joinedSeason = state.season;
@@ -2350,8 +2508,17 @@ export function enterOffseason(state: GameState): GameState {
     addSeasonToCareer(player);
     const before = player.overall;
     const wasUserPlayer = player.teamId === s.userTeamId;
-    // Stored NFTs are frozen in the collection: no aging, growth or decline.
-    if (!storedIds.has(player.id)) developPlayer(player, rng);
+    // Stored NFTs are frozen in the collection, and a career is frozen when it
+    // ends: no aging, growth or decline for either.
+    if (!storedIds.has(player.id) && !player.retired) developPlayer(player, rng);
+    // A stored NFT is frozen while it sits in the collection: no aging, no
+    // development and no retirement, so the owner keeps it. Its contract years
+    // still tick, but an expired stored NFT is kept (not deleted) and stays
+    // in the collection rather than being lost.
+    if (storedIds.has(player.id)) {
+      player.years = Math.max(0, player.years - 1);
+      continue;
+    }
     if (wasUserPlayer) {
       const delta = player.overall - before;
       s.devReport.push({
@@ -2408,23 +2575,8 @@ export function enterOffseason(state: GameState): GameState {
     }
   }
 
-  // Stored NFTs are still under contract; when the deal runs out the NFT is lost.
-  if (s.stash?.length) {
-    const lapsedNfts = s.stash.filter((id) => {
-      const player = s.players[id];
-      return !player || player.years <= 0;
-    });
-    s.stash = s.stash.filter((id) => !lapsedNfts.includes(id));
-    if (lapsedNfts.length) {
-      s.log.unshift({
-        id: `log_${s.season}_stash_expired`,
-        season: s.season,
-        text: `Stored NFT deals expired: ${lapsedNfts
-          .map((id) => s.players[id]?.name ?? 'a player')
-          .join(', ')}.`,
-      });
-    }
-  }
+  // Stored NFTs are frozen in the collection: they never age, expire or
+  // disappear, and the owner keeps them indefinitely.
 
   // Record the season before retired players disappear from the league.
   s.history = [
@@ -2534,25 +2686,33 @@ export function enterOffseason(state: GameState): GameState {
       player.teamId = null;
       player.years = 0;
       player.option = null;
+      // Sealed so the buy-out pickup below cannot put a retired career back on
+      // the open market, where it used to age into a 40-year-old 25 OVR.
+      player.retired = true;
     }
     s.freeAgents = s.freeAgents.filter((fa) => fa !== id);
   }
 
   s.freeAgents = Array.from(new Set(s.freeAgents)).filter((id) => {
     const p = s.players[id];
-    return p && p.teamId === null;
+    return p && p.teamId === null && !p.retired;
   });
 
   cpuResignPlayers(s);
   s.freeAgents = Array.from(new Set(s.freeAgents)).filter((id) => {
     const p = s.players[id];
-    return p && p.teamId === null;
+    return p && p.teamId === null && !p.retired;
   });
   generateVeteranPool(s, rng, used);
   cpuSignFreeAgents(s, rng);
   fillCpuRosters(s, rng);
   for (const team of Object.values(s.teams)) {
     if (team.id !== s.userTeamId) trainCpuTeam(s, team.id);
+  }
+  // Clubs fuse spare maxed players into a tier above them, the same trade the
+  // owner can make on the Roster tab.
+  for (const team of Object.values(s.teams)) {
+    if (team.id !== s.userTeamId) cpuFuse(s, team.id, rng);
   }
 
   // Worst winning percentage picks first; traded picks follow their new owner.
@@ -2823,7 +2983,6 @@ export function storeExpiredPlayer(
   if (!player || player.teamId !== state.userTeamId) {
     return { error: 'That player is not on your roster.' };
   }
-  if (player.cornerstone) return { error: 'A cornerstone can never be stored.' };
   if (player.years > 0 || state.phase !== 'offseason') {
     return { error: 'Only an expired contract can be stored.' };
   }
@@ -2871,7 +3030,6 @@ export function waivePlayer(state: GameState, playerId: string): GameState {
   const s = clone(state);
   const player = s.players[playerId];
   if (!player || player.teamId !== s.userTeamId) return state;
-  if (player.cornerstone) return state;
   if (rosterOf(s, s.userTeamId).length <= ROSTER_MIN) return state;
   // Waiving is free, but the remaining salary stays on the cap as dead money.
   if (player.years > 0) {
@@ -2909,7 +3067,6 @@ export function buyoutPlayer(
   if (!player || player.teamId !== state.userTeamId) {
     return { error: 'That player is not on your roster.' };
   }
-  if (player.cornerstone) return { error: 'A cornerstone is untouchable: he cannot be bought out.' };
   if (player.years <= 0) return { error: 'Expired contracts do not need a buyout.' };
   if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN) {
     return { error: `You must keep at least ${ROSTER_MIN} players.` };
@@ -2945,9 +3102,15 @@ export interface MarketResult {
 
 /**
  * Rival club that can take on this contract and pay the price in HWD. The
- * marketplace is peer-to-peer, so the buyer must hold the tokens it spends.
+ * marketplace is peer-to-peer, so the buyer must hold the tokens it spends, and
+ * a club only pays for a player it would actually use.
  */
-function marketBuyer(state: GameState, salary: number, price: number): Team | null {
+function marketBuyer(
+  state: GameState,
+  salary: number,
+  price: number,
+  player?: Player,
+): Team | null {
   const cap = capFor(state);
   return (
     Object.values(state.teams)
@@ -2955,6 +3118,7 @@ function marketBuyer(state: GameState, salary: number, price: number): Team | nu
       .filter((team) => rosterOf(state, team.id).length < ROSTER_MAX)
       .filter((team) => payrollOf(state, team.id) + salary <= cap + 1e-9)
       .filter((team) => clubHwdBalance(state, team.id) >= price)
+      .filter((team) => !player || wouldPlay(state, team.id, player))
       .sort((a, b) => capSpaceOf(state, b.id) - capSpaceOf(state, a.id))[0] ?? null
   );
 }
@@ -2972,9 +3136,6 @@ export function sellPlayerToMarket(
   price: number,
 ): MarketResult {
   const player = state.players[playerId];
-  if (player?.cornerstone) {
-    return { error: 'A cornerstone is untouchable: he can never be sold.' };
-  }
   const eligibility = canListOnMarket(state, playerId);
   if (!player || !eligibility.eligible) {
     return { error: marketBlockReason(eligibility.reasons) };
@@ -2986,13 +3147,19 @@ export function sellPlayerToMarket(
   if (!Number.isFinite(ask) || ask < MARKET_MIN_PRICE) {
     return { error: `The market pays at least ${MARKET_MIN_PRICE} HWD.` };
   }
-  const buyer = marketBuyer(state, player.salary, ask);
+  // The owner names the price; rivals simply refuse an ask far past valuation.
+  if (ask > marketMaxBid(player)) {
+    return {
+      error: `${player.name} is valued at about ${marketValue(player)} HWD; no club will pay ${ask}.`,
+    };
+  }
+  const buyer = marketBuyer(state, player.salary, ask, player);
   if (!buyer) {
-    const canAffordContract = marketBuyer(state, player.salary, 0);
+    const canAffordContract = marketBuyer(state, player.salary, 0, player);
     return {
       error: canAffordContract
         ? `No club holds ${ask} HWD to buy him right now. Lower your ask or wait for the market to refill.`
-        : 'No team can absorb that contract right now.',
+        : `No rival has the cap room and the need for ${player.name} right now.`,
     };
   }
 
@@ -3067,6 +3234,136 @@ export function buyMarketPlayer(state: GameState, listingId: string): MarketResu
   return { state: s };
 }
 
+/* ------------------------------------------------------------------ */
+/* Season clock: the 24-hour wait and the HWD that clears it           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The 24-hour season clock is switched off while long seasons are being
+ * tested. Flip this back to true to restore the wait and paid skips.
+ */
+export const SEASON_COOLDOWN_ENABLED = false;
+/** Real time between season tips, so a league year is one day. */
+export const SEASON_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** Paid skips a manager may buy in one calendar day. */
+export const SEASON_SKIP_MAX_PER_DAY = 3;
+/** Completed seasons before paid skips unlock, mirroring the marketplace gate. */
+export const SEASON_SKIP_MIN_ACCOUNT_SEASONS = 6;
+/** First-skip price at the opening cap; a low test price for now. */
+export const SEASON_SKIP_BASE = 10;
+/** Each later skip in the same day costs this much more. */
+export const SEASON_SKIP_ESCALATION = 1.6;
+
+/** When the next season may open, in epoch milliseconds; 0 means it is open now. */
+export function seasonReadyAt(state: GameState): number {
+  const at = state.seasonReadyAt ? Date.parse(state.seasonReadyAt) : 0;
+  return Number.isFinite(at) ? at : 0;
+}
+
+/** Milliseconds left on the season wait. */
+export function seasonCooldownRemaining(state: GameState, now = new Date()): number {
+  if (!SEASON_COOLDOWN_ENABLED) return 0;
+  return Math.max(0, seasonReadyAt(state) - now.getTime());
+}
+
+export function seasonReady(state: GameState, now = new Date()): boolean {
+  return seasonCooldownRemaining(state, now) === 0;
+}
+
+/** Paid skips already bought today. */
+export function seasonSkipsUsedToday(state: GameState, now = new Date()): number {
+  return state.seasonSkip?.day === todayKey(now) ? Math.max(0, state.seasonSkip.count) : 0;
+}
+
+export function seasonSkipsLeft(state: GameState, now = new Date()): number {
+  return Math.max(0, SEASON_SKIP_MAX_PER_DAY - seasonSkipsUsedToday(state, now));
+}
+
+/**
+ * Price of the next skip. The live base (10) is a low test price; the formula
+ * stays the same so the real base can be restored without touching callers. It
+ * scales with the square root of the cap so it follows the economy without
+ * outrunning income late in a career, and each later skip in a day costs more.
+ */
+export function seasonSkipCost(state: GameState, now = new Date()): number {
+  if (seasonReady(state, now)) return 0;
+  const scale = Math.sqrt(Math.max(1, capFor(state) / CAP));
+  const used = seasonSkipsUsedToday(state, now);
+  return Math.ceil(SEASON_SKIP_BASE * scale * SEASON_SKIP_ESCALATION ** used);
+}
+
+export interface SeasonSkipQuote {
+  /** Milliseconds left on the free wait. */
+  remainingMs: number;
+  /** HWD the next skip costs; 0 when the season is already open. */
+  cost: number;
+  /** Skips still available today. */
+  skipsLeft: number;
+  /** Why a skip cannot be bought right now. */
+  blocked?: string;
+}
+
+/** What clearing the season wait costs, and whether it can be bought. */
+export function seasonSkipQuote(state: GameState, now = new Date()): SeasonSkipQuote {
+  const remainingMs = seasonCooldownRemaining(state, now);
+  const skipsLeft = seasonSkipsLeft(state, now);
+  const cost = seasonSkipCost(state, now);
+  if (remainingMs === 0) {
+    return { remainingMs, cost: 0, skipsLeft, blocked: 'The next season is already ready.' };
+  }
+  if (accountSeasons(state) < SEASON_SKIP_MIN_ACCOUNT_SEASONS) {
+    return {
+      remainingMs,
+      cost,
+      skipsLeft,
+      blocked: `Paid skips unlock after ${SEASON_SKIP_MIN_ACCOUNT_SEASONS} completed seasons.`,
+    };
+  }
+  if (skipsLeft <= 0) {
+    return { remainingMs, cost, skipsLeft, blocked: 'You have already bought every skip for today.' };
+  }
+  const balance = hwdBalance(state);
+  if (cost > balance) {
+    return { remainingMs, cost, skipsLeft, blocked: `A skip costs ${cost} HWD; you have ${balance}.` };
+  }
+  return { remainingMs, cost, skipsLeft };
+}
+
+/** Open the next season and start its 24-hour wait. */
+export function advanceSeason(state: GameState, now = new Date()): GameState {
+  const next = startNextSeason(state);
+  if (next === state) return state;
+  next.seasonReadyAt = SEASON_COOLDOWN_ENABLED
+    ? new Date(now.getTime() + SEASON_COOLDOWN_MS).toISOString()
+    : undefined;
+  return next;
+}
+
+/**
+ * Pay HWD to open the next season without waiting. The fee goes to the
+ * development fund and never burns: the rival float is a closed pool, so
+ * destroying tokens would starve later players. It is charged only after the
+ * season actually advances, so a refused advance can never take a token.
+ */
+export function skipSeasonWait(
+  state: GameState,
+  now = new Date(),
+): { state?: GameState; error?: string } {
+  const quote = seasonSkipQuote(state, now);
+  if (quote.blocked) return { error: quote.blocked };
+  const next = advanceSeason(state, now);
+  if (next === state) return { error: 'You need a legal roster first.' };
+  next.hwd = hwdBalance(next) - quote.cost;
+  next.devFund = devFundBalance(next) + quote.cost;
+  next.seasonSkip = { day: todayKey(now), count: seasonSkipsUsedToday(state, now) + 1 };
+  next.log.unshift({
+    id: `log_${next.season}_season_skip_${next.log.length}`,
+    season: next.season,
+    text: `Cleared the season wait: ${quote.cost} HWD to the development fund.`,
+  });
+  return { state: next };
+}
+
 export function startNextSeason(state: GameState): GameState {
   if (signedPlayers(state, state.userTeamId).length < ROSTER_MIN) return state;
   const s = clone(state);
@@ -3117,12 +3414,23 @@ export function startNextSeason(state: GameState): GameState {
     player.stats = emptyStats();
     player.injuryGames = 0;
     player.injury = null;
-    // Players bought out last season hit the open market with the new league year.
-    if (player.teamId === null && player.years === 0 && !s.freeAgents.includes(player.id)) {
+    // Players bought out last season hit the open market with the new league
+    // year. Retired careers live in the record book, not in free agency.
+    if (
+      player.teamId === null &&
+      player.years === 0 &&
+      !player.retired &&
+      !s.freeAgents.includes(player.id)
+    ) {
       s.freeAgents.push(player.id);
     }
   }
 
+  // The market reopens for one last wave once expired deals have actually left
+  // their rosters. Until this point those players were still under the user's
+  // control, so the CPU's earlier free-agency pass could never bid on a star
+  // who walked and he lost a whole season waiting for an offer.
+  cpuSignFreeAgents(s, rng);
   fillCpuRosters(s, rng);
   cpuTradeMarket(s, rng);
   fillCpuRosters(s, rng);

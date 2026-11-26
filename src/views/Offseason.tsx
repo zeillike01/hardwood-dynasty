@@ -30,18 +30,21 @@ import {
 } from '../game/engine';
 import { canListOnMarket, marketBlockReason, marketFee, marketValue } from '../game/market';
 import { money, TeamMark, TierBadge } from '../components/ui';
+import { SeasonAdvance } from '../components/SeasonAdvance';
 import { FreeAgentTable } from './FreeAgency';
 
 export function OffseasonView({
   state,
   onState,
   onStartSeason,
+  onSkipSeason,
   notify,
   onOpenPlayer,
 }: {
   state: GameState;
   onState: (next: GameState) => void;
   onStartSeason: () => void;
+  onSkipSeason: () => void;
   notify: (message: string, ok: boolean) => void;
   onOpenPlayer: (id: string) => void;
 }) {
@@ -350,7 +353,7 @@ export function OffseasonView({
                             disabled={!eligibility.eligible}
                             title={
                               eligibility.eligible
-                                ? 'Valuation is a guide only — name your own ask'
+                                ? 'Name your own ask — rivals pay up to about 25% over valuation'
                                 : marketBlockReason(eligibility.reasons)
                             }
                             onChange={(event) =>
@@ -644,9 +647,14 @@ export function OffseasonView({
                 ROSTER_MIN - signed.length === 1 ? '' : 's'
               } under contract to open the season.`}
         </span>
-        <button className="btn primary" disabled={!ready} onClick={onStartSeason}>
-          Start season {state.season + 1}
-        </button>
+        <SeasonAdvance
+          state={state}
+          ready={ready}
+          label={`Start season ${state.season + 1}`}
+          className="btn primary"
+          onStart={onStartSeason}
+          onSkip={onSkipSeason}
+        />
       </div>
     </div>
   );

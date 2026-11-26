@@ -100,7 +100,12 @@ export function RosterView({
     : null;
   const fusionResultTier = fusionInputTier === null ? null : fusionInputTier - 1;
   const wallet = hwdBalance(state);
-  const fusionCost = fusionInputTier === null ? null : fusionHwdCost(fusionInputTier);
+  const fusionBestOverall = fusionSelection.length
+    ? Math.max(...fusionSelection.map((id) => state.players[id]?.overall ?? 0))
+    : null;
+  const fusionCost = fusionBestOverall === null ? null : fusionHwdCost(fusionBestOverall);
+  const fusionCostExact = fusionSelection.length === FUSION_MIN_PLAYERS;
+  const fusionCostLabel = fusionCost === null ? '' : `${fusionCostExact ? '' : 'from '}${fusionCost} HWD`;
 
   const lineup = state.lineup ?? [];
   const byId = new Map(roster.map((player) => [player.id, player]));
@@ -205,7 +210,7 @@ export function RosterView({
     setFuseIds([]);
     notify(
       minted
-        ? `${minted.name} minted: tier ${minted.tier}, 18 years old, ${minted.overall} OVR${
+        ? `${minted.name} minted: tier ${minted.tier}, ${minted.overall} OVR${
             minted.teamId ? '.' : ' — stored in your NFT collection.'
           }`
         : 'Fusion complete.',
@@ -484,10 +489,10 @@ export function RosterView({
               <span className="eyebrow">Tier fusion</span>
               <span className="muted small">
                 Pick {FUSION_MIN_PLAYERS} fully trained players of the same tier. They are all burned
-                permanently and mint one brand-new 18-year-old NFT a tier above them, on a rookie-scale
-                deal. The merge is paid in HWD, which goes to the development treasury — it costs no
-                training points. Fusion stops at tier {FUSION_TOP_TIER + 1} → {FUSION_TOP_TIER}; the
-                Hall of Fame tier is HWD-league only.
+                permanently and mint one brand-new NFT a tier above them, on a three-year deal priced to his rating. The best player you burn sets the mint's rating — he arrives at 112% of that
+                player's overall, capped at 99 — and one training level is still left. The merge is
+                paid in HWD — the fee rises with the best player you burn — and goes to the development
+                treasury, so it costs no training points. Fusion stops at tier {FUSION_TOP_TIER + 1} → {FUSION_TOP_TIER}; the Hall of Fame tier is HWD-league only.
               </span>
             </div>
             {fusionCandidates.length === 0 ? (
@@ -535,8 +540,9 @@ export function RosterView({
                 </div>
                 {fusionCost !== null && (
                   <p className={`fusion-cost small${wallet < fusionCost ? ' short' : ''}`}>
-                    Costs <strong>{fusionCost} HWD</strong> · paid into the development treasury · you
-                    hold {wallet} HWD
+                    {fusionCostExact ? 'Costs' : 'Costs at least'}{' '}
+                    <strong>{fusionCost} HWD</strong> · paid into the development treasury · you hold{' '}
+                    {wallet} HWD
                     {wallet < fusionCost ? ' — not enough HWD' : ''}
                   </p>
                 )}
@@ -550,7 +556,7 @@ export function RosterView({
                 >
                   {fusionResultTier === null
                     ? 'Select players to fuse'
-                    : `Fuse ${fusionSelection.length} → tier ${fusionResultTier} · ${fusionCost} HWD`}
+                    : `Fuse ${fusionSelection.length} → tier ${fusionResultTier} · ${fusionCostLabel}`}
                 </button>
           </>
         )}
@@ -625,7 +631,7 @@ export function RosterView({
       <p className="muted small training-note">
         Win games to earn TP and train players to level {MAX_LEVEL}. Promotion is fusion-only:
         burn {FUSION_MIN_PLAYERS} maxed players of the same tier and pay the HWD fee, which goes into
-        the development treasury, to mint one 18-year-old a tier higher (up to tier{' '}
+        the development treasury, to mint one brand-new player a tier higher (up to tier{' '}
         {FUSION_TOP_TIER}). The Hall of Fame tier comes only from the HWD league on the HOF tab.
         Cash pays signing bonuses.
       </p>

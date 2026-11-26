@@ -4,6 +4,7 @@
  */
 import {
   capFor,
+  convertHwdToTrainingPoints,
   createLeague,
   fusePlayers,
   payrollOf,
@@ -11,8 +12,8 @@ import {
   signStashedPlayer,
   stashPlayers,
 } from '../src/game/engine';
-import { MAX_LEVEL, STASH_LIMIT } from '../src/game/data';
-import { fusionHwdCost } from '../src/game/market';
+import { LEAGUE_MIN_SALARY, MAX_LEVEL, STASH_LIMIT } from '../src/game/data';
+import { fusionHwdCost, HWD_TP_MIN, hwdTpQuote } from '../src/game/market';
 import type { GameState, Player } from '../src/game/types';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -22,7 +23,6 @@ function assert(condition: unknown, message: string): asserts condition {
 
 function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Player[] {
   const picks = rosterOf(state, state.userTeamId)
-    .filter((player) => !player.cornerstone)
     .slice(0, count);
   picks.forEach((player) => {
     player.tier = tier;
@@ -37,6 +37,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
 {
   const base = createLeague('NYS', 11);
   const picks = eligible(base, 3);
+  const fee = fusionHwdCost(Math.max(...picks.map((player) => player.overall)));
   const before = rosterOf(base, base.userTeamId).length;
   const result = fusePlayers(base, picks.map((player) => player.id));
   assert(result.state, 'three maxed, same-tier roster players fuse');
@@ -45,6 +46,10 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   assert(minted.tier === 4, 'target tier is one above the inputs (5 -> 4)');
   assert(minted.age === 18, 'the mint is 18 years old');
   assert(minted.years === 3, 'the mint is on a three-year deal');
+  assert(
+    minted.salary === LEAGUE_MIN_SALARY,
+    'a low-rated mint is floored at the league minimum',
+  );
   assert(minted.teamId === next.userTeamId, 'the mint is signed when roster and cap allow');
   assert(
     rosterOf(next, next.userTeamId).length === before - 3 + 1,
@@ -60,30 +65,31 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
     'payroll stays under the cap',
   );
   assert(
-    (next.hwd ?? 0) === (base.hwd ?? 0) - fusionHwdCost(5),
+    (next.hwd ?? 0) === (base.hwd ?? 0) - fee,
     'a fusion pays its HWD price from the wallet',
   );
   assert(
-    (next.devFund ?? 0) === (base.devFund ?? 0) + fusionHwdCost(5),
+    (next.devFund ?? 0) === (base.devFund ?? 0) + fee,
     'the fusion fee lands in the development treasury',
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* 1a. the HWD price rises with the tier being fused                 */
+/* 1a. the HWD price rises with the best burned rating               */
 /* ---------------------------------------------------------------- */
 {
+  assert(fusionHwdCost(60) === 1, 'a low-rated fusion pays the 1 HWD minimum');
   assert(
-    fusionHwdCost(5) === 1 && fusionHwdCost(4) === 2,
-    'tier-5 and tier-4 fusions cost 1 and 2 HWD',
+    fusionHwdCost(70) === 1 && fusionHwdCost(75) > fusionHwdCost(70),
+    'the fee starts rising once the best burned player clears 70 OVR',
   );
   assert(
-    fusionHwdCost(3) === 4 && fusionHwdCost(2) === 7,
-    'tier-3 and tier-2 fusions cost 4 and 7 HWD',
+    fusionHwdCost(90) > fusionHwdCost(80) && fusionHwdCost(80) > fusionHwdCost(75),
+    'the fee keeps rising with the inherited rating',
   );
   assert(
-    [2, 3, 4].every((tier) => fusionHwdCost(tier) > fusionHwdCost(tier + 1)),
-    'fusion gets dearer at the higher tiers',
+    fusionHwdCost(95) > fusionHwdCost(90),
+    'a star-level anchor pays a star-level toll',
   );
 }
 
@@ -98,6 +104,38 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const result = fusePlayers(base, picks.map((player) => player.id));
   assert(!result.state && /HWD/.test(result.error ?? ''), 'fusion is refused without enough HWD');
   assert(JSON.stringify(base.players) === before, 'the refused fusion burned nothing');
+}
+
+/* ---------------------------------------------------------------- */
+/* 1c. the conversion desk charges no fee                              */
+/* ---------------------------------------------------------------- */
+{
+  const base = createLeague('NYS', 26);
+  base.hwd = 100;
+  base.devFund = 0;
+  const quote = hwdTpQuote(HWD_TP_MIN);
+  const converted = convertHwdToTrainingPoints(base, HWD_TP_MIN);
+  assert(converted.state, 'HWD converts into training points');
+  const afterDesk = converted.state!;
+  assert(
+    (afterDesk.hwd ?? 0) === 100 - HWD_TP_MIN &&
+      afterDesk.teams[afterDesk.userTeamId].trainingPoints ===
+        base.teams[base.userTeamId].trainingPoints + quote.tp &&
+      (afterDesk.devFund ?? 0) === 0,
+    'the desk pays the full rate and leaves the development treasury alone',
+  );
+
+  const picks = eligible(afterDesk, 3);
+  const fee = fusionHwdCost(Math.max(...picks.map((player) => player.overall)));
+  const result = fusePlayers(
+    { ...afterDesk, hwd: fee + 1 },
+    picks.map((player) => player.id),
+  );
+  assert(result.state, 'a conversion does not block a later fusion');
+  assert(
+    (result.state!.devFund ?? 0) === (afterDesk.devFund ?? 0) + fee,
+    'fusion fees still collect in the development treasury',
+  );
 }
 
 /* ---------------------------------------------------------------- */
@@ -159,15 +197,6 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
     'the tier-2 fusion mints a tier-1 player',
   );
 
-  const corner = Object.values(top.players).find((player) => player.cornerstone)!;
-  const tierOne = createLeague('NYS', 17);
-  const c = rosterOf(tierOne, tierOne.userTeamId).find((player) => player.cornerstone)!;
-  c.level = MAX_LEVEL;
-  assert(
-    !fusePlayers(tierOne, [c.id, c.id, c.id]).state,
-    'Hall of Fame / tier-1 and cornerstone players cannot be fused',
-  );
-  void corner;
 }
 
 /* ---------------------------------------------------------------- */
@@ -178,7 +207,6 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   let guard = 0;
   while (rosterOf(base, base.userTeamId).length > 8 && guard++ < 30) {
     const spare = rosterOf(base, base.userTeamId)
-      .filter((player) => !player.cornerstone)
       .sort((a, b) => a.overall - b.overall)[0];
     if (!spare) break;
     spare.teamId = null;
@@ -199,7 +227,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const base = createLeague('NYS', 19);
   while (rosterOf(base, base.userTeamId).length < 15) {
     const donor = Object.values(base.players).find(
-      (player) => !player.teamId && !player.cornerstone,
+      (player) => !player.teamId,
     );
     if (!donor) break;
     donor.teamId = base.userTeamId;
@@ -210,8 +238,8 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const others = rosterOf(base, base.userTeamId).filter(
     (player) => !picks.some((pick) => pick.id === player.id),
   );
-  // Push payroll to the cap so the 8%-of-cap mint cannot fit.
-  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 3;
+  // Push payroll to the cap so even a league-minimum mint cannot fit.
+  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 1;
   others.forEach((player) => (player.salary += room / others.length));
 
   const result = fusePlayers(base, picks.map((player) => player.id));
@@ -238,7 +266,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const base = createLeague('NYS', 20);
   while (rosterOf(base, base.userTeamId).length < 15) {
     const donor = Object.values(base.players).find(
-      (player) => !player.teamId && !player.cornerstone,
+      (player) => !player.teamId,
     );
     if (!donor) break;
     donor.teamId = base.userTeamId;
@@ -249,12 +277,12 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const others = rosterOf(base, base.userTeamId).filter(
     (player) => !picks.some((pick) => pick.id === player.id),
   );
-  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 3;
+  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 1;
   others.forEach((player) => (player.salary += room / others.length));
 
   // Fill the collection with three unsigned players.
   const spare = Object.values(base.players)
-    .filter((player) => !player.teamId && !player.cornerstone)
+    .filter((player) => !player.teamId)
     .slice(0, STASH_LIMIT);
   assert(spare.length === STASH_LIMIT, 'found three spare players for the collection');
   spare.forEach((player) => {
@@ -276,7 +304,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
 {
   const base = createLeague('NYS', 21);
   const spare = Object.values(base.players)
-    .filter((player) => !player.teamId && !player.cornerstone)
+    .filter((player) => !player.teamId)
     .slice(0, 3);
   spare.forEach((player) => {
     player.teamId = null;
@@ -304,13 +332,12 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   let guard = 0;
   while (rosterOf(base, base.userTeamId).length > 8 && guard++ < 30) {
     const spare = rosterOf(base, base.userTeamId)
-      .filter((player) => !player.cornerstone)
       .sort((a, b) => a.overall - b.overall)[0];
     if (!spare) break;
     spare.teamId = null;
   }
   const candidates = Object.values(base.players)
-    .filter((player) => !player.teamId && !player.cornerstone)
+    .filter((player) => !player.teamId)
     .slice(0, 2);
   candidates.forEach((player) => {
     player.tier = 5;
@@ -332,7 +359,6 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   let guard = 0;
   while (rosterOf(base, base.userTeamId).length > 10 && guard++ < 30) {
     const spare = rosterOf(base, base.userTeamId)
-      .filter((player) => !player.cornerstone)
       .sort((a, b) => a.overall - b.overall)[0];
     if (!spare) break;
     spare.teamId = null;
@@ -343,7 +369,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const others = rosterOf(base, base.userTeamId).filter(
     (player) => !picks.some((pick) => pick.id === player.id),
   );
-  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 3;
+  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 1;
   others.forEach((player) => (player.salary += room / others.length));
 
   const snapshot = JSON.stringify(base.players);
@@ -363,7 +389,6 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   let guard = 0;
   while (rosterOf(base, base.userTeamId).length > 10 && guard++ < 30) {
     const spare = rosterOf(base, base.userTeamId)
-      .filter((player) => !player.cornerstone)
       .sort((a, b) => a.overall - b.overall)[0];
     if (!spare) break;
     spare.teamId = null;
@@ -371,7 +396,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const picks = eligible(base, 2);
   picks.forEach((player) => (player.salary = 1));
   const storedPlayer = Object.values(base.players).find(
-    (player) => !player.teamId && !player.cornerstone && !picks.includes(player),
+    (player) => !player.teamId && !picks.includes(player),
   )!;
   storedPlayer.tier = 5;
   storedPlayer.level = MAX_LEVEL;
@@ -381,8 +406,7 @@ function eligible(state: GameState, count: number, tier: Player['tier'] = 5): Pl
   const others = rosterOf(base, base.userTeamId).filter(
     (player) => !picks.some((pick) => pick.id === player.id),
   );
-  const room =
-    capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - picks.length;
+  const room = capFor(base) - others.reduce((sum, player) => sum + player.salary, 0) - 1;
   others.forEach((player) => (player.salary += room / others.length));
 
   const result = fusePlayers(base, [...picks.map((player) => player.id), storedPlayer.id]);
