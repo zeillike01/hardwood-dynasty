@@ -857,7 +857,9 @@ export function fusePlayers(state: GameState, playerIds: string[]): MarketResult
   // mint that goes to the collection adds nobody. Either way the roster left
   // behind must be legal, which the old "inputs + 1" check got wrong.
   const rosterAfter = rosterOf(s, s.userTeamId).length + (signed ? 1 : 0);
-  if (rosterAfter < ROSTER_MIN) {
+  // A manager may dip below the eight-man floor in the offseason while fusing
+  // and rebuilding; the new season cannot tip off until the roster is legal.
+  if (rosterAfter < ROSTER_MIN && s.phase !== 'offseason') {
     return { error: `You must keep at least ${ROSTER_MIN} players on the roster.` };
   }
   // A stored mint needs a free slot in the collection; refuse before burning the inputs.
@@ -3030,7 +3032,7 @@ export function waivePlayer(state: GameState, playerId: string): GameState {
   const s = clone(state);
   const player = s.players[playerId];
   if (!player || player.teamId !== s.userTeamId) return state;
-  if (rosterOf(s, s.userTeamId).length <= ROSTER_MIN) return state;
+  if (rosterOf(s, s.userTeamId).length <= ROSTER_MIN && s.phase !== 'offseason') return state;
   // Waiving is free, but the remaining salary stays on the cap as dead money.
   if (player.years > 0) {
     s.teams[s.userTeamId].deadMoney = [
@@ -3068,7 +3070,7 @@ export function buyoutPlayer(
     return { error: 'That player is not on your roster.' };
   }
   if (player.years <= 0) return { error: 'Expired contracts do not need a buyout.' };
-  if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN) {
+  if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN && state.phase !== 'offseason') {
     return { error: `You must keep at least ${ROSTER_MIN} players.` };
   }
   const cost = buyoutCost(player);
@@ -3140,7 +3142,7 @@ export function sellPlayerToMarket(
   if (!player || !eligibility.eligible) {
     return { error: marketBlockReason(eligibility.reasons) };
   }
-  if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN) {
+  if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN && state.phase !== 'offseason') {
     return { error: `You must keep at least ${ROSTER_MIN} players.` };
   }
   const ask = Math.round(price);

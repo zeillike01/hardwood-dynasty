@@ -1962,6 +1962,42 @@ assert(
   'draft picks should debut in the season after the offseason they were drafted in',
 );
 
+/* The eight-man floor only binds at tip-off: an offseason rebuild may fuse
+   below it, but the new season still refuses to start short-handed. */
+let floorLab = createLeague('NYS', 707070);
+floorLab = enterOffseason(floorLab);
+assert(floorLab.phase === 'offseason', 'the floor lab should be in the offseason');
+let floorTrim = 0;
+while (rosterOf(floorLab, floorLab.userTeamId).length > 9 && floorTrim++ < 30) {
+  const spare = rosterOf(floorLab, floorLab.userTeamId)
+    .sort((a, b) => a.overall - b.overall)[0];
+  spare.teamId = null;
+}
+assert(
+  rosterOf(floorLab, floorLab.userTeamId).length === 9,
+  'the floor lab should start at nine players',
+);
+const floorTrio = rosterOf(floorLab, floorLab.userTeamId).slice(0, 3);
+for (const player of floorTrio) player.level = MAX_LEVEL;
+const floorFused = fusePlayers(floorLab, floorTrio.map((player) => player.id));
+assert(
+  floorFused.state,
+  floorFused.error ?? 'fusing below eight should be allowed in the offseason',
+);
+floorLab = floorFused.state!;
+assert(
+  rosterOf(floorLab, floorLab.userTeamId).length < ROSTER_MIN,
+  'the offseason fusion should leave fewer than eight players',
+);
+assert(
+  startNextSeason(floorLab) === floorLab,
+  'the new season must not tip off below eight players',
+);
+assert(
+  advanceSeason(floorLab) === floorLab,
+  'advancing the season below eight players must be refused',
+);
+
 console.log(
   'Simulation test passed: 6 seasons, tiers and the tier-2 training ceiling, fusion, training, points-to-cash, injuries, draft, free agency, playoffs, box scores, the marketplace and the Hall of Fame league are consistent.',
 );
