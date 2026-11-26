@@ -1,4 +1,5 @@
 import {
+  cancelListing,
   championOf,
   convertHwdToTrainingPoints,
   convertPointsToCash,
@@ -1331,6 +1332,23 @@ assert(
 assert(
   (nextYear.market ?? []).some((entry) => entry.playerId === anotherSeller.id),
   'an expired listing should still be on the market board',
+);
+// Pulling him back must not mint a free year: he returns as a pending contract,
+// right back where the owner re-signs him on the Offseason tab.
+const pullTarget = (expiringListing.market ?? []).find(
+  (entry) => entry.playerId === anotherSeller.id,
+)!;
+const pulled = cancelListing(expiringListing, pullTarget.id);
+assert(pulled.state, pulled.error ?? 'a listing should be pullable');
+assert(
+  pulled.state!.players[anotherSeller.id].teamId === pulled.state!.userTeamId,
+  'pulling a listing back should return the player to the roster',
+);
+assert(
+  pendingContractPlayers(pulled.state!, pulled.state!.userTeamId).some(
+    (player) => player.id === anotherSeller.id,
+  ),
+  'an expired listing should come back as a pending contract, not a free year',
 );
 
 /* The escrowed listing is fair game for a rival once the new year opens. */

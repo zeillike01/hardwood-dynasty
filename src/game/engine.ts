@@ -3414,8 +3414,9 @@ export function cancelListing(state: GameState, listingId: string): MarketResult
   const s = clone(state);
   const live = s.players[listing.playerId];
   if (live.teamId === null) {
+    // He returns on the deal he was frozen on, expired or not: a listing is not
+    // a place to earn a free extra year.
     live.teamId = s.userTeamId;
-    if (live.years <= 0) live.years = 1;
   }
   s.market = (s.market ?? []).filter((entry) => entry.id !== listingId);
   sanitizeLineup(s);

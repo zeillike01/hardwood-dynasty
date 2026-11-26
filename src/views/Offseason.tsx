@@ -8,6 +8,7 @@ import {
   TITLE_CASH_PRIZE,
 } from '../game/data';
 import {
+  cancelListing,
   capFor,
   capSpaceOf,
   championOf,
@@ -28,7 +29,13 @@ import {
   userOnTheClock,
   userTeam,
 } from '../game/engine';
-import { canListOnMarket, marketBlockReason, marketFee, marketValue } from '../game/market';
+import {
+  canListOnMarket,
+  marketBlockReason,
+  marketFee,
+  marketValue,
+  userListings,
+} from '../game/market';
 import { money, TeamMark, TierBadge } from '../components/ui';
 import { SeasonAdvance } from '../components/SeasonAdvance';
 import { FreeAgentTable } from './FreeAgency';
@@ -54,6 +61,11 @@ export function OffseasonView({
   const onClock = userOnTheClock(state);
   const champ = championOf(state);
   const expired = pendingContractPlayers(state, state.userTeamId);
+  // Escrowed listings are off the roster, so show them here too: otherwise a
+  // listed player quietly vanishes from the screen where he is re-signed.
+  const listed = userListings(state).filter(
+    (entry) => state.players[entry.playerId]?.teamId === null,
+  );
   const reportCost = scoutCost(state);
   const signed = signedPlayers(state, state.userTeamId);
   const ready = signed.length >= ROSTER_MIN;
@@ -122,6 +134,16 @@ export function OffseasonView({
       result.note ?? `Sold ${player.name} for ${ask} HWD (${marketFee(ask)} to the development fund).`,
       true,
     );
+  };
+
+  const pullBack = (listingId: string) => {
+    const result = cancelListing(state, listingId);
+    if (result.error || !result.state) {
+      notify(result.error ?? 'That listing could not be pulled back.', false);
+      return;
+    }
+    onState(result.state);
+    notify(result.note ?? 'Listing pulled back.', true);
   };
 
   const draft = (id: string) => {
@@ -599,6 +621,7 @@ export function OffseasonView({
           <h3>Your roster</h3>
           <span className="muted small">
             {money(payrollOf(state, state.userTeamId))} of {money(capFor(state))}
+            {listed.length ? ` · ${listed.length} on the market` : ''}
           </span>
         </div>
         <div className="table-scroll">
@@ -635,6 +658,38 @@ export function OffseasonView({
                   </td>
                 </tr>
               ))}
+              {listed.map((listing) => {
+                const player = state.players[listing.playerId];
+                if (!player) return null;
+                return (
+                  <tr key={listing.id} className="clickable" onClick={() => onOpenPlayer(player.id)}>
+                    <td className="left">
+                      <TeamMark team={team} size={22} />
+                      <strong>{player.name}</strong>
+                    </td>
+                    <td>
+                      <span className="pos-dot">{player.pos}</span>
+                    </td>
+                    <td>{player.age}</td>
+                    <td>{player.overall}</td>
+                    <td>{money(player.salary)}</td>
+                    <td className="muted">{player.years <= 0 ? 'Expired' : player.years}</td>
+                    <td className="muted small nowrap">
+                      On market · {listing.price} HWD{' '}
+                      <button
+                        className="btn small ghost"
+                        title={`Pull ${player.name} back onto the roster`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          pullBack(listing.id);
+                        }}
+                      >
+                        Pull back
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
