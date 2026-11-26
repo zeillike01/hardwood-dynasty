@@ -2851,8 +2851,9 @@ export interface FreeAgentTerms {
  * priced at the ceiling a rival would bid for him, so a signing can never be
  * turned around and sold at a profit. Roster relief is the exception: a club
  * below the eight-man minimum may sign a minimum-scale deal with no cap room
- * and no fee, so it can always be made legal. Shared with the free-agent table
- * so the button and the engine agree.
+ * and no fee, so it can always be made legal. A live Hall of Fame bracket
+ * freezes signings like every other roster move. Shared with the free-agent
+ * table so the button and the engine agree.
  */
 export function freeAgentTerms(state: GameState, player: Player): FreeAgentTerms {
   const asking = askingSalary(state, player);
@@ -2863,13 +2864,15 @@ export function freeAgentTerms(state: GameState, player: Player): FreeAgentTerms
   const rosterFull = rosterOf(state, state.userTeamId).length >= ROSTER_MAX;
   const capSpace = capSpaceOf(state, state.userTeamId);
   const balance = hwdBalance(state);
-  const reason = rosterFull
-    ? 'Roster is full. Waive a player first.'
-    : !relief && asking > capSpace + 1e-9
-      ? 'Not enough cap space'
-      : !relief && hwd > balance
-        ? `Not enough tokens: the signing fee is ${hwd} and you hold ${balance}.`
-        : null;
+  const reason = hofRosterLocked(state)
+    ? HOF_ROSTER_LOCK
+    : rosterFull
+      ? 'Roster is full. Waive a player first.'
+      : !relief && asking > capSpace + 1e-9
+        ? 'Not enough cap space'
+        : !relief && hwd > balance
+          ? `Not enough tokens: the signing fee is ${hwd} and you hold ${balance}.`
+          : null;
   return { asking, hwd, relief, affordable: reason === null, reason };
 }
 
@@ -2879,6 +2882,7 @@ export function signFreeAgent(
   years = 2,
   option: 'player' | 'team' | null = null,
 ): GameState {
+  if (hofRosterLocked(state)) return state;
   const player = state.players[playerId];
   if (!player || player.teamId !== null || !state.freeAgents.includes(playerId)) return state;
   const terms = freeAgentTerms(state, player);

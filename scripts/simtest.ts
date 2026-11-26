@@ -1632,6 +1632,16 @@ assert(
     HOF_ROSTER_LOCK,
   'the skill academy should be frozen while a Hall of Fame bracket is live',
 );
+const hofFreeAgent = hofState.freeAgents.map((id) => hofState.players[id]).filter(Boolean)[0];
+assert(hofFreeAgent, 'the market should still field free agents during a bracket');
+assert(
+  freeAgentTerms(hofState, hofFreeAgent).reason === HOF_ROSTER_LOCK,
+  'free agency should be frozen while a Hall of Fame bracket is live',
+);
+assert(
+  signFreeAgent(hofState, hofFreeAgent.id) === hofState,
+  'a free-agent signing should be refused while a Hall of Fame bracket is live',
+);
 let hofGames = 0;
 while (!hofState.hof!.champion && hofGames++ < 200) {
   const step = simulateHofGame(hofState);

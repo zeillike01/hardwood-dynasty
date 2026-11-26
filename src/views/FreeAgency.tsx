@@ -37,7 +37,7 @@ export function FreeAgentTable({
     const player = state.players[id];
     const terms = freeAgentTerms(state, player);
     if (!terms.affordable) {
-      notify(`${player.name}: ${terms.reason?.toLowerCase() ?? 'cannot be signed.'}`, false);
+      notify(`${player.name}: ${terms.reason ?? 'cannot be signed.'}`, false);
       return;
     }
     const years = lengths[id] ?? 2;
