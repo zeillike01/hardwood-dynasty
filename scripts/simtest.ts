@@ -1281,9 +1281,96 @@ const anotherSeller = rosterOf(marketLab, marketLab.userTeamId).find(
 assert(anotherSeller, 'the user should still have a sellable veteran');
 const anotherValue = marketValue(anotherSeller);
 const drained: GameState = { ...marketLab, clubHwd: {} };
-const noBuyer = sellPlayerToMarket(drained, anotherSeller.id, anotherValue);
-assert(Boolean(noBuyer.error), 'a sale should fail when no club holds the HWD to pay for it');
-assert(hwdBalance(drained) === hwdBalance(marketLab), 'a failed sale must not credit the seller');
+// With no HWD anywhere, the sale cannot happen today and becomes a listing.
+const listed = sellPlayerToMarket(drained, anotherSeller.id, anotherValue);
+assert(listed.state, listed.error ?? 'a sale with no buyer should list the player instead');
+const escrowLab = listed.state!;
+assert(
+  escrowLab.players[anotherSeller.id].teamId === null,
+  'an unsold listing should take the player off the roster',
+);
+assert(
+  (escrowLab.market ?? []).some(
+    (entry) => entry.playerId === anotherSeller.id && entry.sellerTeamId === escrowLab.userTeamId,
+  ),
+  'an unsold player should stay on the market board',
+);
+assert(
+  hwdBalance(escrowLab) === hwdBalance(drained),
+  'listing a player must not credit the owner anything',
+);
+assert(
+  Boolean(sellPlayerToMarket(escrowLab, anotherSeller.id, anotherValue).error),
+  'a player already on the board cannot be listed a second time',
+);
+// Frozen exactly like a stored NFT: no aging and no contract clock.
+const escrowAge = escrowLab.players[anotherSeller.id].age;
+const escrowYears = escrowLab.players[anotherSeller.id].years;
+const escrowOffseason = enterOffseason(escrowLab);
+assert(
+  escrowOffseason.players[anotherSeller.id].age === escrowAge,
+  'a listed player should not age',
+);
+assert(
+  escrowOffseason.players[anotherSeller.id].years === escrowYears,
+  'a listing should not run down the player\'s contract',
+);
+assert(
+  !escrowOffseason.freeAgents.includes(anotherSeller.id),
+  'a listed player should never drift into free agency',
+);
+// Even a listing whose deal has run out waits on the board: free agency is for
+// players with no owner, and a listing still has a seller.
+const expiringListing = structuredClone(escrowOffseason);
+expiringListing.players[anotherSeller.id].years = 0;
+const nextYear = startNextSeason(expiringListing);
+assert(
+  !nextYear.freeAgents.includes(anotherSeller.id),
+  'an expired listing should stay on the board instead of reaching free agency',
+);
+assert(
+  (nextYear.market ?? []).some((entry) => entry.playerId === anotherSeller.id),
+  'an expired listing should still be on the market board',
+);
+
+/* The escrowed listing is fair game for a rival once the new year opens. */
+escrowLab.players[anotherSeller.id].overall = 90;
+const escrowBuyer = Object.values(escrowLab.teams)
+  .filter((team) => team.id !== escrowLab.userTeamId)
+  .sort((a, b) => capSpaceOf(escrowLab, b.id) - capSpaceOf(escrowLab, a.id))[0];
+for (const player of rosterOf(escrowLab, escrowBuyer.id)) player.salary = 1;
+escrowLab.clubHwd = { [escrowBuyer.id]: 500 };
+escrowLab.market = (escrowLab.market ?? []).map((entry) =>
+  entry.playerId === anotherSeller.id ? { ...entry, season: escrowLab.season - 1 } : entry,
+);
+const escrowPrice = (escrowLab.market ?? []).find(
+  (entry) => entry.playerId === anotherSeller.id,
+)!.price;
+const escrowWalletBefore = hwdBalance(escrowLab);
+const escrowSupplyBefore = totalHwd(escrowLab);
+cpuMarketPass(escrowLab);
+assert(
+  escrowLab.players[anotherSeller.id].teamId === escrowBuyer.id,
+  'a rival should buy a listed player once the new year opens',
+);
+assert(
+  hwdBalance(escrowLab) === escrowWalletBefore + escrowPrice - marketFee(escrowPrice),
+  'a rival buying a listing should pay the owner, net of the fee',
+);
+assert(
+  totalHwd(escrowLab) === escrowSupplyBefore,
+  'a listing sale must move HWD, never mint it',
+);
+assert(
+  !(escrowLab.market ?? []).some((entry) => entry.playerId === anotherSeller.id),
+  'a sold listing should come off the board',
+);
+const escrowWalletAfterSale = hwdBalance(escrowLab);
+cpuMarketPass(escrowLab);
+assert(
+  hwdBalance(escrowLab) === escrowWalletAfterSale,
+  'a sold listing must never be paid out twice',
+);
 
 /* Rival clubs buy each other's leftovers at season start, never a fresh board. */
 let passLab = createLeague('SAC', 741852);
@@ -1364,7 +1451,7 @@ assert(
 );
 assert(
   passLab.market!.some((listing) => listing.id === 'mkt_user_pass'),
-  'rival clubs should never buy the user’s own listings',
+  'rivals should not buy a user listing whose player is still on the user roster',
 );
 const passTotal = (state: GameState) =>
   hwdBalance(state) +

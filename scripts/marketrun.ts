@@ -156,12 +156,19 @@ function marketStep(state: GameState): {
       const result = sellPlayerToMarket(s, surplus.id, ask);
       if (result.state) {
         s = result.state;
-        sells += 1;
-        earned += hwdBalance(s) - before;
-        fees += marketFee(ask);
-        events.push(
-          `sold ${surplus.name} (${surplus.overall} OVR) for ${ask} HWD, net ${hwdBalance(s) - before}`,
+        const listed = (s.market ?? []).some(
+          (entry) => entry.playerId === surplus.id && entry.sellerTeamId === uid,
         );
+        if (listed) {
+          events.push(`listed ${surplus.name} (${surplus.overall} OVR) at ${ask} HWD, no buyer yet`);
+        } else {
+          sells += 1;
+          earned += hwdBalance(s) - before;
+          fees += marketFee(ask);
+          events.push(
+            `sold ${surplus.name} (${surplus.overall} OVR) for ${ask} HWD, net ${hwdBalance(s) - before}`,
+          );
+        }
       }
     }
   }

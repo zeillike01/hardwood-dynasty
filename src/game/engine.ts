@@ -2221,10 +2221,19 @@ function wouldPlay(state: GameState, teamId: string, player: Player): boolean {
  * circulates the rival HWD float and slowly lifts the weakest rotations.
  */
 export function cpuMarketPass(state: GameState): void {
+  // A rival's listing is bought off its roster; the user's only once the player
+  // has actually been escrowed onto the board. One rule for the filter and the
+  // buy loop, so the two can never disagree.
+  const buyable = (listing: { playerId: string; sellerTeamId: string }) => {
+    const player = state.players[listing.playerId];
+    if (!player) return false;
+    return listing.sellerTeamId === state.userTeamId
+      ? player.teamId === null
+      : player.teamId === listing.sellerTeamId;
+  };
   const leftover = (state.market ?? [])
     .filter((listing) => listing.season < state.season)
-    .filter((listing) => listing.sellerTeamId !== state.userTeamId)
-    .filter((listing) => state.players[listing.playerId]?.teamId === listing.sellerTeamId)
+    .filter(buyable)
     .sort(
       (a, b) =>
         (state.players[b.playerId]?.overall ?? 0) -
@@ -2237,8 +2246,13 @@ export function cpuMarketPass(state: GameState): void {
   for (const listing of leftover) {
     if (moves >= CPU_MARKET_MOVES) break;
     const player = state.players[listing.playerId];
-    if (!player || player.teamId !== listing.sellerTeamId) continue;
-    if (rosterOf(state, listing.sellerTeamId).length <= ROSTER_MIN) continue;
+    // Buyers are picked turn by turn, so re-check the entry before paying.
+    if (!player || !buyable(listing)) continue;
+    // A rival still sells off a roster, so it must keep a legal one. A user's
+    // escrowed listing already left its roster when it was posted.
+    if (player.teamId !== null && rosterOf(state, listing.sellerTeamId).length <= ROSTER_MIN) {
+      continue;
+    }
     // Never overpay an ask that has drifted past what the player is worth.
     if (listing.price > marketMaxBid(player)) continue;
 
@@ -2259,17 +2273,29 @@ export function cpuMarketPass(state: GameState): void {
     player.teamId = buyer.id;
     player.years = Math.max(1, player.years);
     player.joinedSeason = state.season;
+    if (listing.sellerTeamId === state.userTeamId) {
+      // The owner listed him: the price lands in their wallet, less the fee.
+      state.hwd = (state.hwd ?? 0) + listing.price - fee;
+    } else {
+      state.clubHwd = {
+        ...(state.clubHwd ?? {}),
+        [listing.sellerTeamId]:
+          clubHwdBalance(state, listing.sellerTeamId) + listing.price - fee,
+      };
+    }
     state.clubHwd = {
       ...(state.clubHwd ?? {}),
-      [listing.sellerTeamId]:
-        clubHwdBalance(state, listing.sellerTeamId) + listing.price - fee,
       [buyer.id]: clubHwdBalance(state, buyer.id) - listing.price,
     };
     state.devFund = devFundBalance(state) + fee;
     state.market = (state.market ?? []).filter((entry) => entry.id !== listing.id);
     moves += 1;
 
-    if (player.overall >= 80 || listing.price >= 15) {
+    if (
+      listing.sellerTeamId === state.userTeamId ||
+      player.overall >= 80 ||
+      listing.price >= 15
+    ) {
       state.log.unshift({
         id: `log_${state.season}_cpu_market_${player.id}`,
         season: state.season,
@@ -2503,6 +2529,9 @@ export function enterOffseason(state: GameState): GameState {
   const used = usedNames(s);
   const retired: string[] = [];
   const storedIds = new Set(s.stash ?? []);
+  // Listed players are escrowed off every roster, so they freeze like stored
+  // NFTs: no aging, no decline, no retirement and no contract clock.
+  const listedIds = new Set((s.market ?? []).map((listing) => listing.playerId));
   const awards = seasonAwards(s);
   const outcome = userSeasonResult(s);
   const endPayrolls = Object.fromEntries(
@@ -2522,7 +2551,9 @@ export function enterOffseason(state: GameState): GameState {
     // ends: no aging, growth or decline for either. An immortal Hall of Famer
     // skips development as well, but still clears his season line.
     const immortal = isImmortal(player);
-    if (!storedIds.has(player.id) && !player.retired && !immortal) developPlayer(player, rng);
+    if (!storedIds.has(player.id) && !listedIds.has(player.id) && !player.retired && !immortal) {
+      developPlayer(player, rng);
+    }
     if (immortal) player.stats = emptyStats();
     // A stored NFT is frozen while it sits in the collection: no aging, no
     // development and no retirement, so the owner keeps it. Its contract years
@@ -2532,6 +2563,7 @@ export function enterOffseason(state: GameState): GameState {
       player.years = Math.max(0, player.years - 1);
       continue;
     }
+    if (listedIds.has(player.id)) continue;
     if (wasUserPlayer) {
       const delta = player.overall - before;
       s.devReport.push({
@@ -3122,6 +3154,8 @@ export function buyoutPlayer(
 export interface MarketResult {
   state?: GameState;
   error?: string;
+  /** What the action actually did, for the caller's toast. */
+  note?: string;
 }
 
 function cleanRename(name: string): string | null {
@@ -3217,11 +3251,15 @@ function marketBuyer(
 }
 
 /**
- * Sell a player NFT to another club for HWD. The owner names the price — the
- * valuation is only a guideline — and the buyer pays from the HWD it already
- * holds, so the sale only moves tokens: the seller gets the price net of the
- * fee and the fee goes to the development fund. Returns an error instead of a
- * state when the gate blocks the sale or no club can pay.
+ * Sell a player NFT for HWD. The owner names the price — the valuation is only
+ * a guideline — and a club that can pay buys on the spot, paying from the HWD
+ * it already holds, so the sale only moves tokens: the seller gets the price
+ * net of the fee and the fee goes to the development fund.
+ *
+ * When no club can pay today the sale becomes a listing rather than failing.
+ * The player is escrowed off the roster and frozen exactly like a stored NFT:
+ * no aging, no contract running and no roster spot, until a rival buys him or
+ * the owner pulls the listing back.
  */
 export function sellPlayerToMarket(
   state: GameState,
@@ -3233,6 +3271,7 @@ export function sellPlayerToMarket(
   if (!player || !eligibility.eligible) {
     return { error: marketBlockReason(eligibility.reasons) };
   }
+  if (hofRosterLocked(state)) return { error: HOF_ROSTER_LOCK };
   if (rosterOf(state, state.userTeamId).length <= ROSTER_MIN && state.phase !== 'offseason') {
     return { error: `You must keep at least ${ROSTER_MIN} players.` };
   }
@@ -3247,43 +3286,68 @@ export function sellPlayerToMarket(
     };
   }
   const buyer = marketBuyer(state, player.salary, ask, player);
-  if (!buyer) {
-    const canAffordContract = marketBuyer(state, player.salary, 0, player);
+  const s = clone(state);
+  const live = s.players[playerId];
+
+  if (buyer) {
+    live.teamId = buyer.id;
+    live.rookie = false;
+    live.joinedSeason = acquisitionSeason(s);
+    live.years = Math.max(1, live.years);
+    const fee = marketFee(ask);
+    // Pay the seller from the buyer's balance; the fee is set aside, not minted.
+    s.clubHwd = {
+      ...(s.clubHwd ?? {}),
+      [buyer.id]: clubHwdBalance(s, buyer.id) - ask,
+    };
+    s.hwd = (s.hwd ?? 0) + ask - fee;
+    s.devFund = devFundBalance(s) + fee;
+    s.market = (s.market ?? []).filter((listing) => listing.playerId !== playerId);
+    s.log.unshift({
+      id: `log_${s.season}_market_sale_${playerId}`,
+      season: s.season,
+      text: `Marketplace: sold ${player.name} to the ${buyer.city} ${buyer.name} for ${ask} HWD, paid from their balance (${fee} HWD to the development fund).`,
+    });
+    sanitizeLineup(s);
     return {
-      error: canAffordContract
-        ? `No club holds ${ask} HWD to buy him right now. Lower your ask or wait for the market to refill.`
-        : `No rival has the cap room and the need for ${player.name} right now.`,
+      state: s,
+      note: `Sold ${player.name} for ${ask} HWD (${fee} to the development fund).`,
     };
   }
 
-  const s = clone(state);
-  const live = s.players[playerId];
-  live.teamId = buyer.id;
-  live.rookie = false;
-  live.joinedSeason = acquisitionSeason(s);
-  live.years = Math.max(1, live.years);
-  const fee = marketFee(ask);
-  // Pay the seller from the buyer's balance; the fee is set aside, not minted.
-  s.clubHwd = {
-    ...(s.clubHwd ?? {}),
-    [buyer.id]: clubHwdBalance(s, buyer.id) - ask,
-  };
-  s.hwd = (s.hwd ?? 0) + ask - fee;
-  s.devFund = devFundBalance(s) + fee;
-  s.market = (s.market ?? []).filter((listing) => listing.playerId !== playerId);
+  // Nobody could pay today: he waits on the board instead. Off the roster, deal
+  // frozen and no aging, like a stored NFT, until a rival buys him.
+  live.teamId = null;
+  live.option = null;
+  s.market = [
+    ...(s.market ?? []).filter((entry) => entry.playerId !== playerId),
+    {
+      id: `mkt_u_${s.season}_${playerId}`,
+      playerId,
+      sellerTeamId: s.userTeamId,
+      price: ask,
+      season: s.season,
+    },
+  ];
   s.log.unshift({
-    id: `log_${s.season}_market_sale_${playerId}`,
+    id: `log_${s.season}_market_list_${playerId}`,
     season: s.season,
-    text: `Marketplace: sold ${player.name} to the ${buyer.city} ${buyer.name} for ${ask} HWD, paid from their balance (${fee} HWD to the development fund).`,
+    text: `Marketplace: listed ${live.name} at ${ask} HWD. He is off the roster and will not age until a rival buys him.`,
   });
   sanitizeLineup(s);
-  return { state: s };
+  return {
+    state: s,
+    note: `Listed ${player.name} at ${ask} HWD. No club could pay today, so he waits on the board — off the roster and not aging — until someone buys him.`,
+  };
 }
 
 /** Buy a listed player NFT with HWD; the tokens go to the selling club. */
 export function buyMarketPlayer(state: GameState, listingId: string): MarketResult {
   const listing = (state.market ?? []).find((entry) => entry.id === listingId);
   if (!listing) return { error: 'That listing is no longer available.' };
+  if (listing.sellerTeamId === state.userTeamId) {
+    return { error: 'That is your own listing. Pull it back from Your listings instead.' };
+  }
   const player = state.players[listing.playerId];
   if (!player || player.teamId !== listing.sellerTeamId) {
     return { error: 'That player is no longer for sale.' };
@@ -3325,6 +3389,42 @@ export function buyMarketPlayer(state: GameState, listingId: string): MarketResu
   });
   sanitizeLineup(s);
   return { state: s };
+}
+
+/**
+ * Take a listing back off the board. The player returns to the roster on the
+ * deal he was frozen on, so an expired one arrives on a fresh year, exactly
+ * like a stored NFT being signed.
+ */
+export function cancelListing(state: GameState, listingId: string): MarketResult {
+  if (hofRosterLocked(state)) return { error: HOF_ROSTER_LOCK };
+  const listing = (state.market ?? []).find((entry) => entry.id === listingId);
+  if (!listing || listing.sellerTeamId !== state.userTeamId) {
+    return { error: 'That listing is not yours.' };
+  }
+  const player = state.players[listing.playerId];
+  if (!player) return { error: 'That listing is no longer available.' };
+  if (
+    player.teamId === null &&
+    rosterOf(state, state.userTeamId).length >= ROSTER_MAX
+  ) {
+    return { error: 'Roster is full. Waive a player first.' };
+  }
+
+  const s = clone(state);
+  const live = s.players[listing.playerId];
+  if (live.teamId === null) {
+    live.teamId = s.userTeamId;
+    if (live.years <= 0) live.years = 1;
+  }
+  s.market = (s.market ?? []).filter((entry) => entry.id !== listingId);
+  sanitizeLineup(s);
+  s.log.unshift({
+    id: `log_${s.season}_market_pull_${listing.playerId}`,
+    season: s.season,
+    text: `Marketplace: pulled ${live.name} back off the board at ${listing.price} HWD.`,
+  });
+  return { state: s, note: `Pulled ${live.name} back onto your roster.` };
 }
 
 /* ------------------------------------------------------------------ */
@@ -3503,6 +3603,9 @@ export function startNextSeason(state: GameState): GameState {
         .filter((deal) => deal.years > 0);
     }
   }
+  // Listed players are escrowed and stay on the board until they are bought or
+  // pulled back, so they never drift into free agency at the new league year.
+  const listedIds = new Set((s.market ?? []).map((listing) => listing.playerId));
   for (const player of Object.values(s.players)) {
     player.stats = emptyStats();
     player.injuryGames = 0;
@@ -3513,6 +3616,7 @@ export function startNextSeason(state: GameState): GameState {
       player.teamId === null &&
       player.years === 0 &&
       !player.retired &&
+      !listedIds.has(player.id) &&
       !s.freeAgents.includes(player.id)
     ) {
       s.freeAgents.push(player.id);

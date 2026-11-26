@@ -118,7 +118,10 @@ export function OffseasonView({
       return;
     }
     onState(result.state);
-    notify(`Sold ${player.name} for ${ask} HWD (${marketFee(ask)} to the development fund).`, true);
+    notify(
+      result.note ?? `Sold ${player.name} for ${ask} HWD (${marketFee(ask)} to the development fund).`,
+      true,
+    );
   };
 
   const draft = (id: string) => {

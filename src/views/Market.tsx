@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { GameState } from '../game/types';
 import {
   buyMarketPlayer,
+  cancelListing,
   capSpaceOf,
   convertHwdToTrainingPoints,
   hofRosterLocked,
@@ -26,6 +27,7 @@ import {
   marketFee,
   marketValue,
   openListings,
+  userListings,
 } from '../game/market';
 import { ROSTER_MAX } from '../game/data';
 import { money, TierBadge } from '../components/ui';
@@ -49,6 +51,7 @@ export function MarketView({
     .filter((id) => id !== state.userTeamId)
     .reduce((sum, id) => sum + clubHwdBalance(state, id), 0);
   const listings = openListings(state);
+  const mine = userListings(state);
   const roster = rosterOf(state, state.userTeamId).sort((a, b) => b.overall - a.overall);
   const rosterFull = roster.length >= ROSTER_MAX;
   const capSpace = capSpaceOf(state, state.userTeamId);
@@ -96,7 +99,20 @@ export function MarketView({
       return;
     }
     onState(result.state);
-    notify(`Sold ${player.name} for ${ask} HWD (${marketFee(ask)} to the development fund).`, true);
+    notify(
+      result.note ?? `Sold ${player.name} for ${ask} HWD (${marketFee(ask)} to the development fund).`,
+      true,
+    );
+  };
+
+  const pull = (listingId: string) => {
+    const result = cancelListing(state, listingId);
+    if (result.error || !result.state) {
+      notify(result.error ?? 'That listing could not be pulled back.', false);
+      return;
+    }
+    onState(result.state);
+    notify(result.note ?? 'Listing pulled back.', true);
   };
 
   const buy = (listingId: string) => {
@@ -214,8 +230,8 @@ export function MarketView({
             <p className="muted small">
               {money(capSpace)} in cap space · {roster.length}/{ROSTER_MAX} players. Your HWD goes
               straight to the selling club; only the {feePercent}% fee is withheld for development.
-              Rival clubs clear any listing still on the board when the next season opens, so buy
-              what you want before then.
+              Rival clubs clear their own listings when the next season opens; a player you listed
+              stays on the board, frozen, until someone buys him.
             </p>
           </div>
         </div>
@@ -301,7 +317,8 @@ export function MarketView({
               Name your own ask, but rivals buy with their heads: a club only pays up to about a
               quarter over the valuation, and only if he would crack its rotation. It also has to
               hold that HWD and fit his contract under its cap; you receive the price net of the
-              {feePercent}% fee. Make sure you can spare him.
+              {feePercent}% fee. If no club can pay today he is listed instead: off your roster,
+              not aging, until a rival buys him or you pull the listing back.
             </p>
           </div>
         </div>
@@ -378,6 +395,82 @@ export function MarketView({
               );
             })}
           </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Your listings</h2>
+            <p className="muted small">
+              A player no club could pay for waits here instead of coming back: he is off your
+              roster, his deal is frozen and he does not age, exactly like a stored NFT, until a
+              rival buys him. Pull a listing back to put him on the roster again.
+            </p>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th className="left">Player</th>
+                <th>OVR</th>
+                <th>Age</th>
+                <th>Salary</th>
+                <th>Price</th>
+                <th>Listed</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {mine.map((listing) => {
+                const player = state.players[listing.playerId];
+                if (!player) return null;
+                return (
+                  <tr key={listing.id}>
+                    <td
+                      className="left clickable"
+                      title={`View ${player.name}'s ratings`}
+                      onClick={() => onOpenPlayer(player.id)}
+                    >
+                      <strong>{player.name}</strong>{' '}
+                      <span className="pos-dot">{player.pos}</span>
+                    </td>
+                    <td>{player.overall}</td>
+                    <td>{player.age}</td>
+                    <td>{money(player.salary)}</td>
+                    <td>
+                      <strong>{listing.price} HWD</strong>
+                    </td>
+                    <td className="muted">Season {listing.season}</td>
+                    <td>
+                      <button
+                        className="btn small"
+                        disabled={deskLocked || (rosterFull && player.teamId === null)}
+                        title={
+                          deskLocked
+                            ? 'The roster is frozen until the Hall of Fame bracket finishes'
+                            : rosterFull && player.teamId === null
+                              ? 'Roster is full. Waive a player first.'
+                              : `Pull ${player.name} back onto your roster`
+                        }
+                        onClick={() => pull(listing.id)}
+                      >
+                        Pull back
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {mine.length === 0 && (
+                <tr>
+                  <td className="left muted" colSpan={7}>
+                    You have nothing on the board.
+                  </td>
+                </tr>
+              )}
+            </tbody>
           </table>
         </div>
       </section>

@@ -340,12 +340,20 @@ export function marketBlockReason(reasons: MarketBlock[]): string {
 /* CPU listings                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The user's listings. A listing that found no buyer escrows its player, so he
+ * sits off every roster: no roster spot, no contract clock and no aging until
+ * somebody buys him or the owner pulls him back.
+ */
 export function userListings(state: GameState): MarketListing[] {
-  return (state.market ?? []).filter(
-    (listing) =>
+  return (state.market ?? []).filter((listing) => {
+    const player = state.players[listing.playerId];
+    return (
       listing.sellerTeamId === state.userTeamId &&
-      state.players[listing.playerId]?.teamId === state.userTeamId,
-  );
+      Boolean(player) &&
+      (player.teamId === null || player.teamId === state.userTeamId)
+    );
+  });
 }
 
 export function openListings(state: GameState): MarketListing[] {
