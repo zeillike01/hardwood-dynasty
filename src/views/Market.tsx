@@ -121,11 +121,11 @@ export function MarketView({
           <div>
             <h2>HWD marketplace</h2>
             <p className="muted small">
-              Player NFTs trade for HWD tokens, a currency of their own: cash still pays salaries
-              and bonuses. Sales are peer-to-peer — the buying club pays from the HWD it holds, the
-              seller receives the price net of the {feePercent}% marketplace fee, and that fee goes
-              to the development fund. Rookies are soulbound until their rookie deal ends, and
-              accounts need six completed seasons before they can sell.
+              Player NFTs trade for HWD tokens, a currency of their own: cash still pays salaries,
+              buyouts and the front office. Sales are peer-to-peer — the buying club pays from the
+              HWD it holds, the seller receives the price net of the {feePercent}% marketplace fee,
+              and that fee goes to the development fund. Rookies are soulbound until their rookie
+              deal ends, and accounts need six completed seasons before they can sell.
             </p>
           </div>
         </div>

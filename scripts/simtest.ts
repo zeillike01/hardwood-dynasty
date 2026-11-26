@@ -35,7 +35,6 @@ import {
   signStashedPlayer,
   spendTrainingPoints,
   stashPlayers,
-  signingBonus,
   salaryDemand,
   simulateNextRound,
   simulatePlayoffs,
@@ -270,8 +269,11 @@ assert(
   'a maxed tier-5 player should gain about one overall per training level, not stall out',
 );
 assert(
-  signingBonus(lab.freeAgents.map((id) => lab.players[id]).sort((a, b) => b.overall - a.overall)[0]) > 0,
-  'free agents should require a cash signing bonus',
+  freeAgentTerms(
+    lab,
+    lab.freeAgents.map((id) => lab.players[id]).sort((a, b) => b.overall - a.overall)[0],
+  ).hwd > 0,
+  'free agents should cost HWD to sign',
 );
 
 /* CPU promotion: the only TP tier-up left, capped at tier 2 */
@@ -709,8 +711,8 @@ const reliefFa = reliefLab.freeAgents
 assert(reliefFa, 'the market should offer a minimum-scale free agent');
 const reliefTerms = freeAgentTerms(reliefLab, reliefFa);
 assert(
-  reliefTerms.relief && reliefTerms.affordable && reliefTerms.bonus === 0,
-  `relief terms should waive cap room and the bonus: ${JSON.stringify(reliefTerms)}`,
+  reliefTerms.relief && reliefTerms.affordable && reliefTerms.hwd === 0,
+  `relief terms should waive cap room and the HWD fee: ${JSON.stringify(reliefTerms)}`,
 );
 assert(
   reliefTerms.asking <= MIN_SALARY_EXCEPTION * capFor(reliefLab),
@@ -720,8 +722,9 @@ const reliefSigned = signFreeAgent(reliefLab, reliefFa.id, 2);
 assert(reliefSigned !== reliefLab, 'relief should let a capped-out club reach the minimum');
 assert(
   reliefSigned.teams[reliefSigned.userTeamId].cash === 0 &&
+    reliefSigned.hwd === reliefLab.hwd &&
     reliefSigned.players[reliefFa.id].salary === reliefTerms.asking,
-  'a relief signing should charge no bonus and pay the asking salary',
+  'a relief signing should charge no cash or HWD and pay the asking salary',
 );
 assert(
   signedPlayers(reliefSigned, reliefSigned.userTeamId).length === 8,
@@ -741,6 +744,29 @@ assert(
     signedPlayers(reliefOpened, reliefOpened.userTeamId).length >= 8,
   'a club rescued through relief should be able to open the next season',
 );
+
+// A free agent is signed with HWD, and the fee goes to the development
+// treasury: cash buys no player NFT, so a cheap signing can never be resold
+// for tokens at a profit.
+let feeLab = createLeague('MIA', 909094);
+const feeFa = feeLab.freeAgents
+  .map((id) => feeLab.players[id])
+  .filter(Boolean)
+  .sort((a, b) => b.overall - a.overall)[0];
+const feeTerms = freeAgentTerms(feeLab, feeFa);
+assert(
+  feeTerms.hwd >= marketMaxBid(feeFa),
+  'a free agent should cost at least what a rival would bid for him',
+);
+const feeCash = feeLab.teams[feeLab.userTeamId].cash;
+const feeSigned = signFreeAgent(feeLab, feeFa.id, 3);
+assert(feeSigned !== feeLab, 'an affordable free agent should sign');
+assert(feeSigned.hwd === (feeLab.hwd ?? 0) - feeTerms.hwd, 'signing should charge the fee in HWD');
+assert(
+  feeSigned.devFund === (feeLab.devFund ?? 0) + feeTerms.hwd,
+  'the signing fee should go to the development treasury',
+);
+assert(feeSigned.teams[feeSigned.userTeamId].cash === feeCash, 'a signing should cost no cash');
 
 // A full roster cannot draft a sixteenth player, but the pick can be passed so
 // the draft never stalls with the user on the clock.

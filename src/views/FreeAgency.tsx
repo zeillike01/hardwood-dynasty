@@ -26,7 +26,7 @@ export function FreeAgentTable({
     .sort((a, b) => b.overall - a.overall);
   const [lengths, setLengths] = useState<Record<string, number>>({});
   // The offseason table shows the ten best free agents, plus any cheaper option
-  // beyond them, so a capped-out or cash-poor club can still find a legal deal.
+  // beyond them, so a capped-out or HWD-poor club can still find a legal deal.
   const rows = compact
     ? freeAgents.filter(
         (player, index) => index < 10 || freeAgentTerms(state, player).affordable,
@@ -45,7 +45,7 @@ export function FreeAgentTable({
     notify(
       `Signed ${player.name} for ${years} year${years === 1 ? '' : 's'} at ${money(
         terms.asking,
-      )} per year${terms.bonus ? ` plus a ${money(terms.bonus)} bonus` : ' on a minimum-scale deal'}.`,
+      )} per year${terms.hwd ? `, ${terms.hwd} HWD to the development fund` : ' on a minimum-scale deal'}.`,
       true,
     );
   };
@@ -63,7 +63,7 @@ export function FreeAgentTable({
             <th>OVR</th>
             <th>POT</th>
             <th>Asking</th>
-            <th>Bonus</th>
+            <th>HWD fee</th>
             <th>Years</th>
             <th />
           </tr>
@@ -72,7 +72,6 @@ export function FreeAgentTable({
           {rows.map((player) => {
             const terms = freeAgentTerms(state, player);
             const asking = terms.asking;
-            const bonus = terms.bonus;
             const rival = hasRivalInterest(player, state.season);
             const reason = terms.reason ?? `Sign ${player.name}`;
             return (
@@ -93,7 +92,7 @@ export function FreeAgentTable({
                 <td>{player.overall}</td>
                 <td className="muted">{player.potential}</td>
                 <td className={rival ? 'down' : ''}>{money(asking)}</td>
-                <td>{money(bonus)}</td>
+                <td>{terms.hwd || 'Free'}</td>
                 <td>
                   <select
                     className="mini-select"

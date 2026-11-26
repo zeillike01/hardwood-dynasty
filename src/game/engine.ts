@@ -672,12 +672,6 @@ export function trainingGain(_player: Player): number {
   return TRAINING_ATTR_GAIN;
 }
 
-/** One-time cash fee paid to a free agent on top of his cap hit. */
-export function signingBonus(player: Player): number {
-  const rate = player.overall >= 85 ? 0.75 : 0.15;
-  return Math.max(0.4, Math.round(player.salary * rate * 10) / 10);
-}
-
 export const isSuperstar = (player: Player) => player.overall >= 85;
 
 function attrOrder(pos: Pos): (keyof Attrs)[] {
@@ -2091,6 +2085,9 @@ function cpuSignFreeAgents(state: GameState, rng: Rng) {
       // full roster only opens up for a genuine upgrade.
       if (full && !canReleaseFor(state, team.id, pick)) continue;
       if (roster.length >= target && cpuPriority(pick) < weakest + 4) continue;
+      // Rivals still shop free agency with cash and cap space only: the HWD
+      // fee is a human-player rule, so a rival's token balance stays the
+      // liquidity that buys from the user's marketplace.
       releaseWeakest(state, team.id, pick);
       pick.teamId = team.id;
       pick.rookie = false;
@@ -2843,35 +2840,37 @@ export function askingSalary(state: GameState, player: Player): number {
 
 export interface FreeAgentTerms {
   asking: number;
-  bonus: number;
+  hwd: number;
   relief: boolean;
   affordable: boolean;
   reason: string | null;
 }
 
 /**
- * What a free agent would cost right now, including roster relief: a club below
- * the eight-man minimum may sign a minimum-scale deal without cap room or a
- * cash bonus, so an over-cap roster can always be made legal. Shared with the
- * free-agent table so the button and the engine agree.
+ * What a free agent would cost right now. The fee is HWD, never cash, and is
+ * priced at the ceiling a rival would bid for him, so a signing can never be
+ * turned around and sold at a profit. Roster relief is the exception: a club
+ * below the eight-man minimum may sign a minimum-scale deal with no cap room
+ * and no fee, so it can always be made legal. Shared with the free-agent table
+ * so the button and the engine agree.
  */
 export function freeAgentTerms(state: GameState, player: Player): FreeAgentTerms {
   const asking = askingSalary(state, player);
   const relief =
     signedPlayers(state, state.userTeamId).length < ROSTER_MIN &&
     asking <= MIN_SALARY_EXCEPTION * capFor(state);
-  const bonus = relief ? 0 : signingBonus({ ...player, salary: asking });
+  const hwd = relief ? 0 : marketMaxBid(player);
   const rosterFull = rosterOf(state, state.userTeamId).length >= ROSTER_MAX;
   const capSpace = capSpaceOf(state, state.userTeamId);
-  const cash = state.teams[state.userTeamId].cash;
+  const balance = hwdBalance(state);
   const reason = rosterFull
     ? 'Roster is full. Waive a player first.'
     : !relief && asking > capSpace + 1e-9
       ? 'Not enough cap space'
-      : !relief && bonus > cash + 1e-9
-        ? 'Not enough cash for the signing bonus'
+      : !relief && hwd > balance
+        ? `Not enough tokens: the signing fee is ${hwd} and you hold ${balance}.`
         : null;
-  return { asking, bonus, relief, affordable: reason === null, reason };
+  return { asking, hwd, relief, affordable: reason === null, reason };
 }
 
 export function signFreeAgent(
@@ -2888,18 +2887,20 @@ export function signFreeAgent(
   const s = clone(state);
   const live = s.players[playerId];
   live.salary = terms.asking;
-  const bonus = terms.bonus;
   live.teamId = s.userTeamId;
   live.rookie = false;
   live.joinedSeason = acquisitionSeason(s);
   live.years = clamp(Math.round(years), 1, 4);
   live.option = option;
-  s.teams[s.userTeamId].cash = Math.round((s.teams[s.userTeamId].cash - bonus) * 10) / 10;
+  // The fee is HWD, straight into the development treasury: free agency is a
+  // sink, so signing a player can never create a token out of cash.
+  s.hwd = hwdBalance(s) - terms.hwd;
+  s.devFund = devFundBalance(s) + terms.hwd;
   s.freeAgents = s.freeAgents.filter((id) => id !== playerId);
   s.log.unshift({
     id: `log_${s.season}_fa_${playerId}`,
     season: s.season,
-    text: `Signed ${live.name} (${live.pos}) for ${live.years} year${live.years === 1 ? '' : 's'} at $${live.salary.toFixed(1)}M per year${bonus ? ` and a $${bonus.toFixed(1)}M bonus` : ''}.`,
+    text: `Signed ${live.name} (${live.pos}) for ${live.years} year${live.years === 1 ? '' : 's'} at $${live.salary.toFixed(1)}M per year${terms.hwd ? `, ${terms.hwd} HWD to the development fund` : ' on a minimum-scale deal'}.`,
   });
   sanitizeLineup(s);
   return s;

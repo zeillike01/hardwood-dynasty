@@ -633,7 +633,7 @@ export function RosterView({
         burn {FUSION_MIN_PLAYERS} maxed players of the same tier and pay the HWD fee, which goes into
         the development treasury, to mint one brand-new player a tier higher (up to tier{' '}
         {FUSION_TOP_TIER}). The Hall of Fame tier comes only from the HWD league on the HOF tab.
-        Cash pays signing bonuses.
+        Free agents are signed with HWD, and the fee goes to the treasury.
       </p>
     </section>
   );
