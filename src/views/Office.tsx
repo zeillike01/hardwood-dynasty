@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import type { GameState } from '../game/types';
 import { FACILITIES, FACILITY_MAX_LEVEL, type FacilityKey } from '../game/data';
 import {
   facilityLevels,
   facilityUpgradeCost,
+  renameTeam,
   upgradeFacility,
   userTeam,
 } from '../game/engine';
+import { hwdBalance, RENAME_TEAM_HWD } from '../game/market';
 import { money } from '../components/ui';
 
 export function OfficeView({
@@ -20,6 +23,14 @@ export function OfficeView({
   const team = userTeam(state);
   const levels = facilityLevels(state);
   const dead = (team.deadMoney ?? []).reduce((sum, deal) => sum + deal.salary, 0);
+  const hwd = hwdBalance(state);
+  const [clubName, setClubName] = useState(team.name);
+  const cleanClub = clubName.trim().replace(/\s+/g, ' ');
+  const canRename =
+    cleanClub.length >= 2 &&
+    cleanClub.length <= 24 &&
+    cleanClub !== team.name &&
+    hwd >= RENAME_TEAM_HWD;
 
   const upgrade = (key: FacilityKey) => {
     const result = upgradeFacility(state, key);
@@ -30,6 +41,16 @@ export function OfficeView({
     }
     onState(result.state);
     notify(`${def?.name ?? 'Facility'} upgraded to level ${levels[key] + 1}.`, true);
+  };
+
+  const renameClub = () => {
+    const result = renameTeam(state, state.userTeamId, clubName);
+    if (result.error || !result.state) {
+      notify(result.error ?? 'That rename could not be completed.', false);
+      return;
+    }
+    onState(result.state);
+    notify(`Club renamed to the ${team.city} ${cleanClub}.`, true);
   };
 
   return (
@@ -52,6 +73,31 @@ export function OfficeView({
           <span className="eyebrow">Cash on hand</span>
           <strong>{money(team.cash)}</strong>
           <span className="muted small">from prizes, quests and TP conversion</span>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <span className="eyebrow">HWD sink</span>
+            <h2>Club identity</h2>
+            <p className="muted small">
+              Rename your club for {RENAME_TEAM_HWD} HWD. The fee goes to the development treasury,
+              and you hold {hwd} HWD.
+            </p>
+          </div>
+        </div>
+        <div className="rename-row">
+          <input
+            className="rename-input"
+            value={clubName}
+            maxLength={24}
+            aria-label="Club name"
+            onChange={(event) => setClubName(event.target.value)}
+          />
+          <button className="btn primary" disabled={!canRename} onClick={renameClub}>
+            Rename · {RENAME_TEAM_HWD} HWD
+          </button>
         </div>
       </section>
 

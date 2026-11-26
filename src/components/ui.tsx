@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { AttrKey, Game, GameState, Player, Team } from '../game/types';
 import {
@@ -17,6 +18,7 @@ import {
   skillLevelTotal,
   skillOffer,
 } from '../game/engine';
+import { hwdBalance, RENAME_PLAYER_HWD } from '../game/market';
 
 export const money = (n: number) => `$${n.toFixed(1)}M`;
 
@@ -104,6 +106,8 @@ export function PlayerDetailModal({
   onClose,
   onWaive,
   onBuyout,
+  onStore,
+  onRename,
   onBuySkill,
 }: {
   state: GameState;
@@ -111,6 +115,8 @@ export function PlayerDetailModal({
   onClose: () => void;
   onWaive: (id: string) => boolean;
   onBuyout: (id: string) => boolean;
+  onStore: (id: string) => boolean;
+  onRename: (id: string, name: string) => boolean;
   onBuySkill: (id: string, key: AttrKey) => void;
 }) {
   const team = player.teamId ? state.teams[player.teamId] : null;
@@ -118,6 +124,15 @@ export function PlayerDetailModal({
   // The academy is part of the roster freeze while a Hall of Fame bracket is live.
   const skillsLocked = userPlayer && hofRosterLocked(state);
   const cash = state.teams[state.userTeamId].cash;
+  const hwd = hwdBalance(state);
+  const [renameDraft, setRenameDraft] = useState(player.name);
+  const renameClean = renameDraft.trim().replace(/\s+/g, ' ');
+  const canRename =
+    !skillsLocked &&
+    renameClean.length >= 2 &&
+    renameClean.length <= 24 &&
+    renameClean !== player.name &&
+    hwd >= RENAME_PLAYER_HWD;
   const skillUsed = skillLevelTotal(player);
   const skillCap = skillCapFor(state, player);
   const s = player.stats;
@@ -322,6 +337,31 @@ export function PlayerDetailModal({
 
       {player.teamId === state.userTeamId && (
         <div className="contract-actions">
+          <div className="rename-row">
+            <input
+              className="rename-input"
+              value={renameDraft}
+              maxLength={24}
+              aria-label="New player name"
+              onChange={(event) => setRenameDraft(event.target.value)}
+            />
+            <button
+              className="btn small"
+              disabled={!canRename}
+              title={
+                skillsLocked
+                  ? 'The roster is frozen while a Hall of Fame bracket is live.'
+                  : hwd < RENAME_PLAYER_HWD
+                    ? `Renaming costs ${RENAME_PLAYER_HWD} HWD; you have ${hwd}.`
+                    : 'Change his name for HWD. The fee goes to the development treasury.'
+              }
+              onClick={() => {
+                if (onRename(player.id, renameDraft)) onClose();
+              }}
+            >
+              Rename · {RENAME_PLAYER_HWD} HWD
+            </button>
+          </div>
           {player.years > 0 && (
             <button
               className="btn primary full"
@@ -334,6 +374,17 @@ export function PlayerDetailModal({
               Buy out contract · {money(buyoutCost(player))} cash
             </button>
           )}
+          {state.phase === 'offseason' && player.years <= 0 && (
+            <button
+              className="btn full"
+              title="Store him in your NFT collection on a 3-year deal"
+              onClick={() => {
+                if (onStore(player.id)) onClose();
+              }}
+            >
+              Store in NFT collection
+            </button>
+          )}
           <button
             className="btn danger full"
             onClick={() => {
@@ -344,7 +395,8 @@ export function PlayerDetailModal({
           </button>
           <p className="muted small contract-note">
             Waiving leaves the remaining salary on the cap as dead money. A buyout clears it for
-            cash, and the player can sign elsewhere next season.
+            cash, and the player can sign elsewhere next season. Storing an expired contract keeps
+            him off the roster and cap until you sign him again.
           </p>
         </div>
       )}

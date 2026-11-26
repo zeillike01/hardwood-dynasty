@@ -9,10 +9,12 @@ import {
   createLeague,
   enterOffseason,
   pendingContractPlayers,
+  renamePlayer,
   rosterOf,
   signedPlayers,
   simulateNextRound,
   simulatePlayoffGame,
+  storeExpiredPlayer,
   advanceSeason,
   seasonReady,
   seasonSkipQuote,
@@ -464,6 +466,32 @@ export default function App() {
     return true;
   };
 
+  const store = (id: string) => {
+    const player = game.players[id];
+    const next = storeExpiredPlayer(game, id, 3);
+    if (next.error || !next.state) {
+      notify(next.error ?? 'That NFT could not be stored.', false);
+      return false;
+    }
+    setGame(next.state);
+    notify(
+      `${player.name} stored in your NFT collection on a 3-year deal. Sign him from the Roster before it runs out.`,
+      true,
+    );
+    return true;
+  };
+
+  const rename = (id: string, name: string) => {
+    const next = renamePlayer(game, id, name);
+    if (next.error || !next.state) {
+      notify(next.error ?? 'That rename could not be completed.', false);
+      return false;
+    }
+    setGame(next.state);
+    notify(`${name.trim().replace(/\s+/g, ' ')} now wears the jersey.`, true);
+    return true;
+  };
+
   const tabs: { id: Tab; label: string }[] = [
     { id: 'dashboard', label: 'Home' },
     { id: 'roster', label: 'Team' },
@@ -650,11 +678,14 @@ export default function App() {
 
       {selectedPlayer && (
         <PlayerDetailModal
+          key={selectedPlayer.id}
           state={game}
           player={selectedPlayer}
           onClose={() => setPlayerId(null)}
           onWaive={waive}
           onBuyout={buyout}
+          onStore={store}
+          onRename={rename}
           onBuySkill={buySkill}
         />
       )}

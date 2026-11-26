@@ -100,6 +100,8 @@ import {
   MARKET_MIN_PRICE,
   marketValue,
   refreshMarketListings,
+  RENAME_PLAYER_HWD,
+  RENAME_TEAM_HWD,
 } from './market';
 
 export class Rng {
@@ -1795,6 +1797,15 @@ export function salaryDemand(player: Player, cap = CAP): number {
   return Math.round(cap * share * rate * 10) / 10;
 }
 
+/**
+ * A Hall of Fame (tier 0) player who has reached his ceiling never ages again:
+ * having hit his prime stats he holds his peak instead of declining, so the
+ * owner keeps the player he paid for.
+ */
+function isImmortal(player: Player): boolean {
+  return player.tier === 0 && player.overall >= player.potential;
+}
+
 function developPlayer(player: Player, rng: Rng) {
   player.age += 1;
   let delta = 0;
@@ -2511,8 +2522,11 @@ export function enterOffseason(state: GameState): GameState {
     const before = player.overall;
     const wasUserPlayer = player.teamId === s.userTeamId;
     // Stored NFTs are frozen in the collection, and a career is frozen when it
-    // ends: no aging, growth or decline for either.
-    if (!storedIds.has(player.id) && !player.retired) developPlayer(player, rng);
+    // ends: no aging, growth or decline for either. An immortal Hall of Famer
+    // skips development as well, but still clears his season line.
+    const immortal = isImmortal(player);
+    if (!storedIds.has(player.id) && !player.retired && !immortal) developPlayer(player, rng);
+    if (immortal) player.stats = emptyStats();
     // A stored NFT is frozen while it sits in the collection: no aging, no
     // development and no retirement, so the owner keeps it. Its contract years
     // still tick, but an expired stored NFT is kept (not deleted) and stays
@@ -2541,7 +2555,10 @@ export function enterOffseason(state: GameState): GameState {
     }
     player.years = Math.max(0, player.years - 1);
 
-    if (player.age >= 38 || (player.age >= 35 && player.overall < 62 && rng.chance(0.5))) {
+    if (
+      !immortal &&
+      (player.age >= 38 || (player.age >= 35 && player.overall < 62 && rng.chance(0.5)))
+    ) {
       retired.push(player.id);
       continue;
     }
@@ -3100,6 +3117,75 @@ export function buyoutPlayer(
 export interface MarketResult {
   state?: GameState;
   error?: string;
+}
+
+function cleanRename(name: string): string | null {
+  const clean = name.trim().replace(/\s+/g, ' ');
+  return clean.length >= 2 && clean.length <= 24 ? clean : null;
+}
+
+/**
+ * HWD sinks. Renaming charges tokens and moves them to the development
+ * treasury, like fusion and season skips, so the float is never destroyed.
+ */
+export function renamePlayer(
+  state: GameState,
+  playerId: string,
+  name: string,
+): MarketResult {
+  const player = state.players[playerId];
+  if (!player || player.teamId !== state.userTeamId) {
+    return { error: 'You can only rename a player on your roster.' };
+  }
+  if (hofRosterLocked(state)) return { error: HOF_ROSTER_LOCK };
+  const clean = cleanRename(name);
+  if (!clean) return { error: 'Use a name between 2 and 24 characters.' };
+  if (clean === player.name) return { error: 'That is already his name.' };
+  const balance = hwdBalance(state);
+  if (balance < RENAME_PLAYER_HWD) {
+    return { error: `Renaming costs ${RENAME_PLAYER_HWD} HWD; you have ${balance}.` };
+  }
+
+  const s = clone(state);
+  const previous = s.players[playerId].name;
+  s.players[playerId].name = clean;
+  s.hwd = balance - RENAME_PLAYER_HWD;
+  s.devFund = devFundBalance(s) + RENAME_PLAYER_HWD;
+  s.log.unshift({
+    id: `log_${s.season}_rename_player_${playerId}_${s.log.length}`,
+    season: s.season,
+    text: `Renamed ${previous} to ${clean} for ${RENAME_PLAYER_HWD} HWD.`,
+  });
+  return { state: s };
+}
+
+export function renameTeam(
+  state: GameState,
+  teamId: string,
+  name: string,
+): MarketResult {
+  const team = state.teams[teamId];
+  if (!team || teamId !== state.userTeamId) {
+    return { error: 'You can only rename your own club.' };
+  }
+  const clean = cleanRename(name);
+  if (!clean) return { error: 'Use a name between 2 and 24 characters.' };
+  if (clean === team.name) return { error: 'That is already the club name.' };
+  const balance = hwdBalance(state);
+  if (balance < RENAME_TEAM_HWD) {
+    return { error: `Renaming the club costs ${RENAME_TEAM_HWD} HWD; you have ${balance}.` };
+  }
+
+  const s = clone(state);
+  s.teams[teamId].name = clean;
+  s.hwd = balance - RENAME_TEAM_HWD;
+  s.devFund = devFundBalance(s) + RENAME_TEAM_HWD;
+  s.log.unshift({
+    id: `log_${s.season}_rename_team_${teamId}`,
+    season: s.season,
+    text: `Renamed the club to the ${s.teams[teamId].city} ${clean} for ${RENAME_TEAM_HWD} HWD.`,
+  });
+  return { state: s };
 }
 
 /**

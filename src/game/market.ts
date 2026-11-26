@@ -43,6 +43,10 @@ export const MARKET_FEE_RATE = 0.05;
 export const CLUB_HWD_START = 5000;
 /** HWD pays for every Hall of Fame league entry. */
 export const HWD_LEAGUE_ENTRY_FEE = 25;
+/** HWD sink: renaming one of your player NFTs. */
+export const RENAME_PLAYER_HWD = 25;
+/** HWD sink: renaming your club. */
+export const RENAME_TEAM_HWD = 100;
 /** CPU clubs list at a premium over what they would pay for a player. */
 export const MARKET_ASK_PREMIUM = 1.1;
 /** The most a club will pay over a player's valuation, so asks cannot drift free. */

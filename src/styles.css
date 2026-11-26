@@ -580,6 +580,26 @@ select {
   flex-wrap: wrap;
 }
 
+.rename-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.rename-input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(12, 16, 21, 0.85);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+
 .link-btn {
   background: none;
   border: none;
