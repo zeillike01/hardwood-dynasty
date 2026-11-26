@@ -109,7 +109,7 @@ export function OffseasonView({
     }
     onState(result.state);
     notify(
-      `${player.name} stored in your NFT collection on a ${years}-year deal. Sign him from the Roster before it runs out.`,
+      `${player.name} stored in your NFT collection on a ${years}-year deal. Sign him from the Roster whenever there is room.`,
       true,
     );
   };

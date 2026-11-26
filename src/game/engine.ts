@@ -894,6 +894,20 @@ export function fusePlayers(state: GameState, playerIds: string[]): MarketResult
 /* Stored NFTs                                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Players escrowed on the market board: listed, off every roster, frozen like
+ * a stored NFT. A rival's listing is not escrowed — its player stays on the
+ * roster and keeps living a normal career until it sells.
+ */
+function escrowedIds(state: GameState): Set<string> {
+  const ids = new Set<string>();
+  for (const listing of state.market ?? []) {
+    if (listing.sellerTeamId !== state.userTeamId) continue;
+    if (state.players[listing.playerId]?.teamId === null) ids.add(listing.playerId);
+  }
+  return ids;
+}
+
 /** NFTs you own that are not on the active roster. */
 export function stashPlayers(state: GameState): Player[] {
   return (state.stash ?? [])
@@ -2531,7 +2545,7 @@ export function enterOffseason(state: GameState): GameState {
   const storedIds = new Set(s.stash ?? []);
   // Listed players are escrowed off every roster, so they freeze like stored
   // NFTs: no aging, no decline, no retirement and no contract clock.
-  const listedIds = new Set((s.market ?? []).map((listing) => listing.playerId));
+  const listedIds = escrowedIds(s);
   const awards = seasonAwards(s);
   const outcome = userSeasonResult(s);
   const endPayrolls = Object.fromEntries(
@@ -2556,11 +2570,9 @@ export function enterOffseason(state: GameState): GameState {
     }
     if (immortal) player.stats = emptyStats();
     // A stored NFT is frozen while it sits in the collection: no aging, no
-    // development and no retirement, so the owner keeps it. Its contract years
-    // still tick, but an expired stored NFT is kept (not deleted) and stays
-    // in the collection rather than being lost.
+    // development, no retirement and no contract clock, so the owner keeps it
+    // indefinitely instead of losing it to an expired deal.
     if (storedIds.has(player.id)) {
-      player.years = Math.max(0, player.years - 1);
       continue;
     }
     if (listedIds.has(player.id)) continue;
@@ -2622,9 +2634,6 @@ export function enterOffseason(state: GameState): GameState {
       player.option = null;
     }
   }
-
-  // Stored NFTs are frozen in the collection: they never age, expire or
-  // disappear, and the owner keeps them indefinitely.
 
   // Record the season before retired players disappear from the league.
   s.history = [
@@ -3606,7 +3615,10 @@ export function startNextSeason(state: GameState): GameState {
   }
   // Listed players are escrowed and stay on the board until they are bought or
   // pulled back, so they never drift into free agency at the new league year.
-  const listedIds = new Set((s.market ?? []).map((listing) => listing.playerId));
+  const listedIds = escrowedIds(s);
+  // A stored NFT is owned forever, even if an old save froze it on a deal that
+  // had already run out.
+  const storedIds = new Set(s.stash ?? []);
   for (const player of Object.values(s.players)) {
     player.stats = emptyStats();
     player.injuryGames = 0;
@@ -3618,11 +3630,15 @@ export function startNextSeason(state: GameState): GameState {
       player.years === 0 &&
       !player.retired &&
       !listedIds.has(player.id) &&
+      !storedIds.has(player.id) &&
       !s.freeAgents.includes(player.id)
     ) {
       s.freeAgents.push(player.id);
     }
   }
+  // A stored NFT or an escrowed listing has an owner, so it is never on the
+  // open market, however it got into the list.
+  s.freeAgents = s.freeAgents.filter((id) => !storedIds.has(id) && !listedIds.has(id));
 
   // The market reopens for one last wave once expired deals have actually left
   // their rosters. Until this point those players were still under the user's

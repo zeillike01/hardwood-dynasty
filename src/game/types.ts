@@ -269,6 +269,8 @@ export interface GameState {
   ratingsVersion?: number;
   /** Set once fused contracts have been re-priced onto the fused-deal discount. */
   fusedSalaryVersion?: number;
+  /** Set once stored NFTs have had their deals frozen and pulled out of free agency. */
+  stashFreezeVersion?: number;
   seed: number;
   rngState: number;
   season: number;

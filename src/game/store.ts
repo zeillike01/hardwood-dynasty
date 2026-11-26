@@ -134,6 +134,24 @@ function migrate(parsed: GameState): GameState | null {
     parsed.market = (parsed.market ?? []).filter((entry) => parsed.players[entry.playerId]);
     parsed.lineup = defaultLineupFor(parsed);
   }
+  // Stored NFTs freeze their contracts now, so an old save cannot lose one to
+  // a deal that ran out. An earlier build pushed expired stored players into
+  // free agency; pull them back into the collection and reopen the deal. A
+  // player who is no longer sitting in the collection (a rival already signed
+  // him) or has retired only loses his stale collection id here — the player
+  // himself is never moved between teams.
+  if (parsed.stashFreezeVersion !== 1) {
+    const keptStash: string[] = [];
+    for (const id of parsed.stash ?? []) {
+      const player = parsed.players[id];
+      if (!player || player.teamId !== null || player.retired) continue;
+      parsed.freeAgents = parsed.freeAgents.filter((entry) => entry !== id);
+      if (player.years <= 0) player.years = 1;
+      keptStash.push(id);
+    }
+    parsed.stash = keptStash;
+    parsed.stashFreezeVersion = 1;
+  }
   // Fusion mints created before the fused-deal discount kept a full-market
   // salary. Cut every such contract back to the demand the engine charges
   // today, but never raise one: a fused deal already below the demand simply

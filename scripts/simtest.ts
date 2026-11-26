@@ -561,8 +561,67 @@ assert(
   'a stored NFT should not develop while it sits in the collection',
 );
 assert(
-  afterFreeze.players[frozenPlayer.id].years === 2,
-  'a stored NFT contract should still tick down',
+  afterFreeze.players[frozenPlayer.id].years === 3,
+  'a stored NFT contract should be frozen with the player, not tick down',
+);
+assert(
+  (afterFreeze.stash ?? []).includes(frozenPlayer.id),
+  'a stored NFT should stay in the collection through the offseason',
+);
+// The next league year must not hand him to free agency or reopen his deal.
+const afterFreezeSeason = startNextSeason(afterFreeze);
+assert(
+  (afterFreezeSeason.stash ?? []).includes(frozenPlayer.id),
+  'a stored NFT should survive the new league year',
+);
+assert(
+  afterFreezeSeason.players[frozenPlayer.id].years === 3,
+  'a stored NFT deal should stay frozen across seasons',
+);
+assert(
+  !afterFreezeSeason.freeAgents.includes(frozenPlayer.id),
+  'a stored NFT should never reach free agency',
+);
+
+/* A save from the build before the freeze: its stored deal ran out and the
+ * player was dropped into free agency. Loading repairs the collection without
+ * moving anyone who already belongs to a club. */
+const legacyStash = createLeague('NYK', 707070);
+const legacyStored = rosterOf(legacyStash, legacyStash.userTeamId)[0];
+legacyStored.teamId = null;
+legacyStored.years = 0;
+const legacyRival = Object.values(legacyStash.teams).find(
+  (team) => team.id !== legacyStash.userTeamId,
+)!;
+const rivalOwned = rosterOf(legacyStash, legacyRival.id)[0];
+legacyStash.stash = [legacyStored.id, rivalOwned.id];
+legacyStash.freeAgents = [...legacyStash.freeAgents, legacyStored.id];
+const repairedStash = importSave(JSON.stringify(legacyStash))!;
+assert(
+  (repairedStash.stash ?? []).includes(legacyStored.id),
+  'loading should keep a stored NFT the old build let expire',
+);
+assert(
+  repairedStash.players[legacyStored.id].years === 1,
+  'loading should reopen an expired stored deal',
+);
+assert(
+  !repairedStash.freeAgents.includes(legacyStored.id),
+  'loading should pull a stored NFT back out of free agency',
+);
+assert(
+  repairedStash.players[rivalOwned.id].teamId === legacyRival.id,
+  'loading should never take a player back from a rival',
+);
+assert(
+  !(repairedStash.stash ?? []).includes(rivalOwned.id),
+  'loading should drop a collection id whose player belongs to a club',
+);
+const repairedAgain = importSave(JSON.stringify(repairedStash))!;
+assert(
+  repairedAgain.players[legacyStored.id].years === 1 &&
+    repairedAgain.stashFreezeVersion === 1,
+  'the freeze repair should run once and mark the save',
 );
 
 // Contracts: expired user deals wait for a decision instead of vanishing.

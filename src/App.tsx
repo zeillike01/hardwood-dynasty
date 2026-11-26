@@ -475,7 +475,7 @@ export default function App() {
     }
     setGame(next.state);
     notify(
-      `${player.name} stored in your NFT collection on a 3-year deal. Sign him from the Roster before it runs out.`,
+      `${player.name} stored in your NFT collection on a 3-year deal. Sign him from the Roster whenever there is room.`,
       true,
     );
     return true;

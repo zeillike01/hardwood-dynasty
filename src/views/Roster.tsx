@@ -569,8 +569,8 @@ export function RosterView({
           </span>
           <span className="muted small">
             Yours, but off the roster: no cap hit and no roster spot until you sign them. Stored
-            players are frozen — no aging and no development — and their contracts keep ticking. A
-            stored deal that runs out is lost, so sign him before it does.
+            players are frozen — no aging, no development and no contract clock — so you keep them
+            indefinitely. Sign one whenever there is room under the cap.
           </span>
         </div>
         {stored.length === 0 ? (
@@ -589,7 +589,7 @@ export function RosterView({
                   <strong>{player.name}</strong>
                   <span className="muted small">
                     {player.pos} · {player.overall} OVR · {player.age}y · {money(player.salary)} ·{' '}
-                    {player.years}y
+                    {player.years}y frozen
                   </span>
                   <button
                     className="btn small"
